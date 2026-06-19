@@ -1,0 +1,30 @@
+# Claude / AI tooling
+.claude/
+.agents/
+_bmad/
+_bmad-output/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv*/
+*.egg-info/
+
+# Node
+node_modules/
+
+# Kokoro model files (large, downloaded at runtime)
+pdf-reader/kokoro-server/models/
+
+# Docker
+*.override.yml
