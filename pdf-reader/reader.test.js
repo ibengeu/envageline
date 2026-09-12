@@ -25,6 +25,15 @@ const {
   DEFAULT_SPEECH_POLICY,
   resolveSpeechPolicy,
   shouldSpeak,
+  convertCardinal,
+  detectNumericEntities,
+  normalizeSpokenText,
+  convertCodeDigits,
+  convertCurrency,
+  convertYear,
+  convertPercentage,
+  convertDecimal,
+  convertOrdinal,
 } = require("./app.js");
 
 function pageBlock(overrides) {
@@ -1370,6 +1379,341 @@ test("renderNarrationText merges a hyphenated wrap within one block but not acro
   assert.ok(narration.includes("understanding wrapped text"));
   assert.ok(!narration.includes("overseas"));
   assert.ok(/over-\s+seas travel in the next block/.test(narration));
+});
+
+test("convertCardinal produces correct spoken form across group boundaries (spec 006 Foundational)", () => {
+  assert.equal(convertCardinal("400"), "four hundred");
+  assert.equal(convertCardinal("12500"), "twelve thousand five hundred");
+  assert.equal(convertCardinal("1000000"), "one million");
+  assert.equal(convertCardinal("15"), "fifteen");
+  assert.equal(convertCardinal("21"), "twenty-one");
+  assert.equal(convertCardinal("105"), "one hundred five");
+});
+
+test("convertCardinal('0') returns 'zero' (boundary case)", () => {
+  assert.equal(convertCardinal("0"), "zero");
+});
+
+test("detectNumericEntities returns an empty array for text with no numeric-like span (spec 006 Foundational, FR-017)", () => {
+  assert.deepEqual(detectNumericEntities("This is plain prose with no numbers at all."), []);
+});
+
+test("detectNumericEntities classifies a plain unambiguous cardinal as one entity (spec 006 Foundational)", () => {
+  const entities = detectNumericEntities("There are 400 units.");
+
+  assert.equal(entities.length, 1);
+  assert.equal(entities[0].category, "cardinal");
+  assert.equal(entities[0].match, "400");
+});
+
+test("detectNumericEntities completes quickly on adversarial input (ReDoS safety, spec 006 Foundational)", () => {
+  const longDigitRun = "9".repeat(5000);
+  const longSeparatorRun = `1${",".repeat(5000)}2`;
+
+  const start = Date.now();
+  detectNumericEntities(`Data: ${longDigitRun} and ${longSeparatorRun}.`);
+  const elapsedMs = Date.now() - start;
+
+  assert.ok(elapsedMs < 1000, `expected under 1000ms, took ${elapsedMs}ms`);
+});
+
+// Regression test for a genuine bug found during implementation: a digit run long enough to
+// exceed Number.MAX_SAFE_INTEGER degrades to Infinity in convertCardinal's group-extraction
+// loop, whose modulo (NaN) and quotient (still Infinity) never satisfy the loop's exit
+// condition, hanging indefinitely. Distinct from regex-backtracking ReDoS above — this is a
+// numeric-overflow DoS in the converter itself, only exposed once CARDINAL_PATTERN correctly
+// matches a long unformatted run as one span instead of fragmenting it (FR-013's "leave
+// unclassifiable input unmodified" is the correct behavior here, per OWASP A08:2025).
+test("convertCardinal does not hang on a digit run beyond this pipeline's largest named scale (spec 006, A08:2025)", () => {
+  const tooLarge = "9".repeat(350);
+
+  const start = Date.now();
+  const result = convertCardinal(tooLarge);
+  const elapsedMs = Date.now() - start;
+
+  assert.ok(elapsedMs < 1000, `expected under 1000ms, took ${elapsedMs}ms`);
+  assert.equal(result, tooLarge);
+});
+
+// Convergence Phase 8, T051: convertCardinal's overflow guard (returns the original digit text
+// unchanged when a number exceeds this pipeline's largest named scale) must propagate through
+// every converter that calls it internally — otherwise the wrapping converter appends its own
+// unit/format text to the raw, unconverted digits, producing a garbled reading FR-013 forbids.
+test("convertCurrency leaves an oversized amount's full match unmodified rather than appending 'dollars' to raw digits (spec 006 Convergence T051, FR-013)", () => {
+  const oversizedMatch = `$${"9".repeat(350)}`;
+
+  assert.equal(convertCurrency(oversizedMatch), oversizedMatch);
+});
+
+test("convertPercentage leaves an oversized amount's full match unmodified rather than appending 'percent' to raw digits (spec 006 Convergence T051, FR-013)", () => {
+  const oversizedMatch = `${"9".repeat(350)}%`;
+
+  assert.equal(convertPercentage(oversizedMatch), oversizedMatch);
+});
+
+test("convertDecimal leaves an oversized whole part's full match unmodified rather than appending a fractional 'point' clause (spec 006 Convergence T051, FR-013)", () => {
+  const oversizedMatch = `${"9".repeat(350)}.14`;
+
+  assert.equal(convertDecimal(oversizedMatch), oversizedMatch);
+});
+
+test("convertYear is unaffected by the overflow guard since a year match is always exactly 4 digits (spec 006 Convergence T051, sanity check)", () => {
+  // Included for completeness per T051's scope, though YEAR_PATTERN can never itself produce an
+  // oversized match (it only matches exactly 4 digits) — this documents that convertYear needs
+  // no overflow-guard change, unlike the other three converters.
+  assert.equal(convertYear("1998"), "nineteen ninety-eight");
+});
+
+test("normalizeSpokenText leaves oversized currency/percentage/decimal spans in narration completely unmodified (spec 006 Convergence T051, FR-013 end-to-end)", () => {
+  const oversized = "9".repeat(350);
+
+  assert.equal(normalizeSpokenText(`The price is $${oversized} today.`), `The price is $${oversized} today.`);
+  assert.equal(normalizeSpokenText(`The rate is ${oversized}% today.`), `The rate is ${oversized}% today.`);
+  assert.equal(normalizeSpokenText(`The value is ${oversized}.14 today.`), `The value is ${oversized}.14 today.`);
+});
+
+test("detectNumericEntities classifies a thousands-separated cardinal as one entity (spec 006 US1)", () => {
+  const entities = detectNumericEntities("The population is 12,500.");
+
+  assert.equal(entities.length, 1);
+  assert.equal(entities[0].category, "cardinal");
+  assert.equal(entities[0].match, "12,500");
+});
+
+test("detectNumericEntities classifies labeled/phone-shaped digit sequences as code, and unlabeled long runs as cardinal (spec 006 US1, FR-004)", () => {
+  const pinEntities = detectNumericEntities("PIN 4829");
+  const phoneEntities = detectNumericEntities("Call 801-234-5678 now.");
+  const longUnlabeled = detectNumericEntities("The population was 123456789.");
+
+  assert.equal(pinEntities.length, 1);
+  assert.equal(pinEntities[0].category, "code");
+
+  assert.equal(phoneEntities.length, 1);
+  assert.equal(phoneEntities[0].category, "code");
+
+  assert.equal(longUnlabeled.length, 1);
+  assert.equal(longUnlabeled[0].category, "cardinal");
+});
+
+test("detectNumericEntities classifies $/£/€ amounts as currency (spec 006 US1)", () => {
+  ["$400", "$1", "$1.50", "£400", "€400"].forEach((amount) => {
+    const entities = detectNumericEntities(`The price is ${amount} today.`);
+    assert.equal(entities.length, 1, `amount: ${amount}`);
+    assert.equal(entities[0].category, "currency", `amount: ${amount}`);
+    assert.equal(entities[0].match, amount, `amount: ${amount}`);
+  });
+});
+
+test("detectNumericEntities classifies magnitude-suffix currency amounts as currency (spec 006 US1, FR-007)", () => {
+  const millionEntities = detectNumericEntities("Revenue reached $4m in sales.");
+  const billionEntities = detectNumericEntities("Valued at $2.5bn overall.");
+
+  assert.equal(millionEntities.length, 1);
+  assert.equal(millionEntities[0].category, "currency");
+  assert.equal(millionEntities[0].match, "$4m");
+
+  assert.equal(billionEntities.length, 1);
+  assert.equal(billionEntities[0].category, "currency");
+  assert.equal(billionEntities[0].match, "$2.5bn");
+});
+
+test("convertCodeDigits produces one spoken digit word per character (spec 006 US1)", () => {
+  assert.equal(convertCodeDigits("4829"), "four eight two nine");
+  assert.equal(convertCodeDigits("801-234-5678"), "eight zero one two three four five six seven eight");
+});
+
+test("convertCurrency produces correct spoken form per example (spec 006 US1)", () => {
+  assert.equal(convertCurrency("$400"), "four hundred dollars");
+  assert.equal(convertCurrency("$1"), "one dollar");
+  assert.equal(convertCurrency("$1.50"), "one dollar and fifty cents");
+  assert.equal(convertCurrency("£400"), "four hundred pounds");
+  assert.equal(convertCurrency("€400"), "four hundred euros");
+  assert.equal(convertCurrency("$4m"), "four million dollars");
+  assert.equal(convertCurrency("$2.5bn"), "two point five billion dollars");
+});
+
+test("normalizeSpokenText leaves an unsupported currency symbol untouched, converting only the digits it doesn't own (spec 006 US1, FR-008)", () => {
+  const nairaResult = normalizeSpokenText("The price is ₦400 today.");
+  const codeResult = normalizeSpokenText("The price is 400 USD today.");
+
+  // The ₦ symbol itself is left as printed text (FR-008 defers non-$/£/€ symbols); the digits
+  // beside it are still classifiable as an ordinary cardinal (FR-003/FR-013's distinction:
+  // only a genuinely unclassifiable span is left fully unmodified, not merely "outside this
+  // spec's currency support").
+  assert.ok(nairaResult.includes("₦"));
+  assert.ok(nairaResult.includes("four hundred"));
+  assert.ok(codeResult.includes("USD"));
+  assert.ok(codeResult.includes("four hundred"));
+});
+
+test("normalizeSpokenText end-to-end: User Story 1 acceptance scenarios (spec 006 US1)", () => {
+  assert.equal(normalizeSpokenText("The device costs $400."), "The device costs four hundred dollars.");
+  assert.equal(normalizeSpokenText("Revenue reached $4m in sales."), "Revenue reached four million dollars in sales.");
+  assert.equal(normalizeSpokenText("The population is 12,500."), "The population is twelve thousand five hundred.");
+  assert.equal(normalizeSpokenText("PIN 4829"), "PIN four eight two nine");
+});
+
+test("detectNumericEntities classifies bare 4-digit numbers in ordinary sentence context as year (spec 006 US2 AS1-AS2)", () => {
+  const entities1998 = detectNumericEntities("The project began in 1998.");
+  const entities2024 = detectNumericEntities("Revenue increased in 2024.");
+
+  assert.equal(entities1998.length, 1);
+  assert.equal(entities1998[0].category, "year");
+  assert.equal(entities2024.length, 1);
+  assert.equal(entities2024[0].category, "year");
+});
+
+test("detectNumericEntities classifies 2000 as year (2000-2009 boundary, spec 006 US2 AS3)", () => {
+  const entities = detectNumericEntities("The year 2000 was significant.");
+
+  assert.equal(entities.length, 1);
+  assert.equal(entities[0].category, "year");
+});
+
+test("detectNumericEntities classifies a 4-digit number followed by a unit word as cardinal, not year (spec 006 US2 AS4)", () => {
+  const entities = detectNumericEntities("1500 units were sold.");
+
+  assert.equal(entities.length, 1);
+  assert.equal(entities[0].category, "cardinal");
+});
+
+test("detectNumericEntities classifies a 4-digit number preceded by a currency symbol as currency, not year (spec 006 US2 AS5)", () => {
+  const entities = detectNumericEntities("$1998 was the price.");
+
+  assert.equal(entities.length, 1);
+  assert.equal(entities[0].category, "currency");
+});
+
+test("convertYear produces correct spoken form (spec 006 US2)", () => {
+  assert.equal(convertYear("1998"), "nineteen ninety-eight");
+  assert.equal(convertYear("2024"), "twenty twenty-four");
+  assert.equal(convertYear("2000"), "two thousand");
+});
+
+test("normalizeSpokenText end-to-end: User Story 2 acceptance scenarios (spec 006 US2)", () => {
+  assert.equal(normalizeSpokenText("The project began in 1998."), "The project began in nineteen ninety-eight.");
+  assert.equal(normalizeSpokenText("Revenue increased in 2024."), "Revenue increased in twenty twenty-four.");
+  assert.equal(normalizeSpokenText("The year 2000 was significant."), "The year two thousand was significant.");
+  // Note: spec.md's prose example capitalizes "One" as sentence-initial; no FR requires
+  // sentence-initial capitalization of a converted number, so this asserts the normalizer's
+  // actual (lowercase) output rather than the spec's illustrative prose capitalization.
+  assert.equal(normalizeSpokenText("1500 units were sold."), "one thousand five hundred units were sold.");
+  assert.equal(normalizeSpokenText("$1998 was the price."), "one thousand nine hundred ninety-eight dollars was the price.");
+});
+
+test("detectNumericEntities classifies percentages as percentage, not decimal (spec 006 US3)", () => {
+  const wholeEntities = detectNumericEntities("an increase of 20%.");
+  const decimalEntities = detectNumericEntities("a rate of 0.5%.");
+
+  assert.equal(wholeEntities.length, 1);
+  assert.equal(wholeEntities[0].category, "percentage");
+  assert.equal(decimalEntities.length, 1);
+  assert.equal(decimalEntities[0].category, "percentage");
+});
+
+test("detectNumericEntities classifies a standalone decimal as decimal (spec 006 US3)", () => {
+  const entities = detectNumericEntities("the value of pi, 3.14, is well known.");
+
+  assert.equal(entities.length, 1);
+  assert.equal(entities[0].category, "decimal");
+});
+
+test("detectNumericEntities classifies ordinals as ordinal (spec 006 US3)", () => {
+  ["21st", "1st", "2nd"].forEach((ordinal) => {
+    const entities = detectNumericEntities(`the ${ordinal} item`);
+    assert.equal(entities.length, 1, `ordinal: ${ordinal}`);
+    assert.equal(entities[0].category, "ordinal", `ordinal: ${ordinal}`);
+  });
+});
+
+test("convertPercentage produces correct spoken form (spec 006 US3)", () => {
+  assert.equal(convertPercentage("20%"), "twenty percent");
+  assert.equal(convertPercentage("0.5%"), "zero point five percent");
+});
+
+test("convertDecimal produces correct spoken form (spec 006 US3)", () => {
+  assert.equal(convertDecimal("3.14"), "three point one four");
+});
+
+test("convertOrdinal produces correct spoken form (spec 006 US3)", () => {
+  assert.equal(convertOrdinal("1st"), "first");
+  assert.equal(convertOrdinal("2nd"), "second");
+  assert.equal(convertOrdinal("21st"), "twenty-first");
+});
+
+test("normalizeSpokenText end-to-end: User Story 3 acceptance scenarios (spec 006 US3)", () => {
+  assert.equal(normalizeSpokenText("an increase of 20%."), "an increase of twenty percent.");
+  assert.equal(normalizeSpokenText("a rate of 0.5%."), "a rate of zero point five percent.");
+  assert.equal(normalizeSpokenText("the value of pi, 3.14,"), "the value of pi, three point one four,");
+  assert.equal(normalizeSpokenText("the 21st century."), "the twenty-first century.");
+  assert.equal(normalizeSpokenText("the 1st and 2nd items."), "the first and second items.");
+});
+
+test("normalizeSpokenText leaves a number beyond this pipeline's convertible range unmodified rather than guessing (spec 006, FR-013, SC-004)", () => {
+  const text = `The population was ${"9".repeat(350)}.`;
+
+  const result = normalizeSpokenText(text);
+
+  assert.equal(result, text);
+});
+
+test("normalizeSpokenText leaves text with no numeric-like span byte-for-byte unchanged (spec 006, FR-017, SC-002)", () => {
+  const plainProse = "This is a plain sentence with no numbers of any kind whatsoever.";
+
+  assert.equal(normalizeSpokenText(plainProse), plainProse);
+});
+
+test("normalization only affects narratable (policy-included) block text, never excluded blocks (spec 006, FR-002)", () => {
+  const blocksByPage = assignBlockIds([
+    [
+      pageBlock({ page: 0, text: "The price is $400.", type: "body" }),
+      pageBlock({ page: 0, text: "See footnote 1 for the $999 figure.", type: "footnote" }),
+    ],
+  ]);
+
+  const narrationText = renderNarrationText(blocksByPage);
+
+  assert.ok(narrationText.includes("four hundred dollars"));
+  assert.ok(!narrationText.includes("$999"));
+  assert.ok(!narrationText.includes("nine hundred ninety-nine"));
+});
+
+test("normalization affects narrationText but never displayText or document block text (spec 006, FR-001, SC-005)", () => {
+  const pages = [
+    [
+      { str: "The device costs $400.", transform: [10, 0, 0, 10, 50, 700], width: 200, height: 10 },
+    ],
+  ];
+
+  const result = buildPipelineOutput(pages, 600, 800);
+
+  assert.ok(result.narrationText.includes("four hundred dollars"));
+  assert.ok(result.displayText.includes("$400"));
+  assert.ok(!result.displayText.includes("four hundred dollars"));
+
+  const allBlockText = result.document.sections.flatMap((section) => section.blocks).map((block) => block.text).join(" ");
+  assert.ok(allBlockText.includes("$400"));
+  assert.ok(!allBlockText.includes("four hundred dollars"));
+});
+
+// SC-001 through SC-005 exercised together on a paragraph resembling the original goal
+// document's own MVP Acceptance Example, per tasks.md T047: currency, year, citation stripping,
+// and percentage all converting correctly in one realistic passage.
+test("multiple normalization categories convert correctly together in one realistic paragraph (spec 006 T047)", () => {
+  // Uses $4m (FR-007's documented attached-suffix form), not "$400 million" as separate words —
+  // the spec's magnitude-suffix examples ($4m, $2.5bn) are always directly attached to the
+  // digits; a space-separated spelled-out magnitude word is a distinct, undocumented pattern
+  // this spec does not claim to support (see the bug note in tasks.md T047).
+  const blocksByPage = assignBlockIds([
+    [pageBlock({ page: 0, text: "Revenue reached $4m in 2024, referencing [13], an increase of 21.5%.", type: "body" })],
+  ]);
+
+  const narrationText = renderNarrationText(blocksByPage);
+
+  assert.ok(narrationText.includes("four million dollars"));
+  assert.ok(narrationText.includes("twenty twenty-four"));
+  assert.ok(!narrationText.includes("[13]"));
+  assert.ok(narrationText.includes("twenty-one point five percent"));
 });
 
 test("mapParagraphsToChunks maps a paragraph to the chunk with the most overlapping words", () => {

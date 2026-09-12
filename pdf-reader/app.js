@@ -682,6 +682,284 @@
     return text.replace(CITATION_MARKER_PATTERN, "").replace(BARE_URL_PATTERN, "").replace(/[ \t]{2,}/g, " ").trim();
   }
 
+  // research.md Decision 1: hand-written cardinal-to-words, grouped into 3-digit chunks from the
+  // most significant end (short-scale English). No "and" inside a cardinal itself (e.g. "one
+  // hundred five", not "one hundred and five") — reserved for currency's cents clause only.
+  const ONES_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
+  const TENS_WORDS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+  const SCALE_WORDS = ["", "thousand", "million", "billion", "trillion"];
+
+  function twoDigitsToWords(n) {
+    if (n < 20) return ONES_WORDS[n];
+    const tens = Math.floor(n / 10);
+    const ones = n % 10;
+    return ones === 0 ? TENS_WORDS[tens] : `${TENS_WORDS[tens]}-${ONES_WORDS[ones]}`;
+  }
+
+  function threeDigitGroupToWords(n) {
+    const hundreds = Math.floor(n / 100);
+    const rest = n % 100;
+    const parts = [];
+    if (hundreds > 0) parts.push(`${ONES_WORDS[hundreds]} hundred`);
+    if (rest > 0) parts.push(twoDigitsToWords(rest));
+    return parts.join(" ");
+  }
+
+  // OWASP A08:2025 Mishandling of Exceptional Conditions - a digit run longer than this pipeline
+  // can name (beyond "trillion", SCALE_WORDS' last entry) must not attempt conversion: without
+  // this guard, a number exceeding Number.MAX_SAFE_INTEGER degrades to Infinity, whose modulo is
+  // NaN while its quotient stays Infinity, making the group-extraction loop below never
+  // terminate — a single adversarial digit run of a few hundred characters would otherwise hang
+  // the reader indefinitely. FR-013 already requires leaving an unclassifiable span as printed
+  // text, and this is exactly that case: a number too large for this spec's named scale words.
+  const MAX_CONVERTIBLE_DIGITS = SCALE_WORDS.length * 3;
+
+  // Exposed separately from convertCardinal so every converter that builds phrasing around a
+  // cardinal-converted whole-number part (currency, percentage, decimal) can check this first
+  // and, if true, return its own full original match unmodified instead of wrapping the raw,
+  // unconverted digits in unit/format words — otherwise FR-013's "leave unclassifiable content
+  // unmodified" guarantee would hold for convertCardinal alone but not for its callers
+  // (Convergence T051).
+  function exceedsConvertibleDigits(digitsText) {
+    return digitsText.replace(/,/g, "").replace(/^0+/, "").length > MAX_CONVERTIBLE_DIGITS;
+  }
+
+  function convertCardinal(digitsText) {
+    if (exceedsConvertibleDigits(digitsText)) return digitsText;
+    const digitsOnly = digitsText.replace(/,/g, "");
+
+    const n = parseInt(digitsOnly, 10);
+    if (n === 0) return "zero";
+
+    const groups = [];
+    let remaining = n;
+    while (remaining > 0) {
+      groups.unshift(remaining % 1000);
+      remaining = Math.floor(remaining / 1000);
+    }
+
+    const scaleIndexOffset = groups.length - 1;
+    return groups
+      .map((group, index) => {
+        if (group === 0) return "";
+        const scaleWord = SCALE_WORDS[scaleIndexOffset - index];
+        return scaleWord ? `${threeDigitGroupToWords(group)} ${scaleWord}` : threeDigitGroupToWords(group);
+      })
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  const DIGIT_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+
+  function convertCodeDigits(digitsText) {
+    return digitsText
+      .split("")
+      .filter((char) => /\d/.test(char))
+      .map((digit) => DIGIT_WORDS[Number(digit)])
+      .join(" ");
+  }
+
+  const CURRENCY_UNIT_WORDS = {
+    $: { singular: "dollar", plural: "dollars" },
+    "£": { singular: "pound", plural: "pounds" },
+    "€": { singular: "euro", plural: "euros" },
+  };
+
+  const MAGNITUDE_WORDS = {
+    k: "thousand",
+    m: "million",
+    mn: "million",
+    million: "million",
+    b: "billion",
+    bn: "billion",
+    billion: "billion",
+    t: "trillion",
+    tn: "trillion",
+    trillion: "trillion",
+  };
+
+  function convertCurrency(matchText) {
+    const parsed = matchText.match(/^([$£€])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(k|m|mn|million|b|bn|billion|t|tn|trillion)?$/i);
+    const [, symbol, wholePart, fractionPart, magnitudeSuffix] = parsed;
+    if (exceedsConvertibleDigits(wholePart)) return matchText;
+    const unitWords = CURRENCY_UNIT_WORDS[symbol];
+
+    if (magnitudeSuffix) {
+      const magnitudeWord = MAGNITUDE_WORDS[magnitudeSuffix.toLowerCase()];
+      const amountWords = fractionPart
+        ? `${convertCardinal(wholePart)} point ${fractionPart.split("").map((digit) => DIGIT_WORDS[Number(digit)]).join(" ")}`
+        : convertCardinal(wholePart);
+      return `${amountWords} ${magnitudeWord} ${unitWords.plural}`;
+    }
+
+    const wholeValue = parseInt(wholePart.replace(/,/g, ""), 10);
+    const wholeUnit = wholeValue === 1 ? unitWords.singular : unitWords.plural;
+    if (!fractionPart) return `${convertCardinal(wholePart)} ${wholeUnit}`;
+
+    const cents = parseInt(fractionPart.padEnd(2, "0").slice(0, 2), 10);
+    const centsWord = cents === 1 ? "cent" : "cents";
+    return `${convertCardinal(wholePart)} ${wholeUnit} and ${convertCardinal(String(cents))} ${centsWord}`;
+  }
+
+  // data-model.md's year mapping: split into two 2-digit groups, except the 2000-2009 range
+  // which is spoken as "two thousand" (+ the trailing cardinal, if non-zero) rather than as two
+  // groups (there is no natural "twenty-oh-three" pairing for a leading zero group).
+  function convertYear(digitsText) {
+    const n = parseInt(digitsText, 10);
+    const firstTwo = Math.floor(n / 100);
+    const lastTwo = n % 100;
+
+    if (firstTwo === 20 && lastTwo < 10) {
+      return lastTwo === 0 ? "two thousand" : `two thousand ${ONES_WORDS[lastTwo]}`;
+    }
+
+    const firstWords = twoDigitsToWords(firstTwo);
+    const lastWords = lastTwo === 0 ? "hundred" : twoDigitsToWords(lastTwo);
+    return `${firstWords} ${lastWords}`;
+  }
+
+  // Returns null (rather than throwing or guessing) when the whole-number part exceeds this
+  // pipeline's convertible range, so callers can fall back to their own full original match
+  // text unmodified (FR-013, Convergence T051) instead of wrapping raw digits in "point ...".
+  function decimalToWords(digitsText) {
+    const [wholePart, fractionPart] = digitsText.split(".");
+    if (exceedsConvertibleDigits(wholePart)) return null;
+    const wholeWords = convertCardinal(wholePart);
+    const fractionWords = fractionPart.split("").map((digit) => DIGIT_WORDS[Number(digit)]).join(" ");
+    return `${wholeWords} point ${fractionWords}`;
+  }
+
+  function convertPercentage(matchText) {
+    const numberText = matchText.slice(0, -1);
+    if (numberText.includes(".")) {
+      const decimalWords = decimalToWords(numberText);
+      return decimalWords === null ? matchText : `${decimalWords} percent`;
+    }
+    if (exceedsConvertibleDigits(numberText)) return matchText;
+    return `${convertCardinal(numberText)} percent`;
+  }
+
+  function convertDecimal(matchText) {
+    const decimalWords = decimalToWords(matchText);
+    return decimalWords === null ? matchText : decimalWords;
+  }
+
+  const IRREGULAR_ORDINAL_WORDS = {
+    one: "first", two: "second", three: "third", five: "fifth", eight: "eighth", nine: "ninth", twelve: "twelfth",
+  };
+
+  function ordinalWordFor(cardinalWord) {
+    if (IRREGULAR_ORDINAL_WORDS[cardinalWord]) return IRREGULAR_ORDINAL_WORDS[cardinalWord];
+    if (cardinalWord.endsWith("y")) return `${cardinalWord.slice(0, -1)}ieth`;
+    return `${cardinalWord}th`;
+  }
+
+  // Ordinal words only ever differ from cardinal words in their final word (e.g.
+  // "twenty-one" -> "twenty-first"; "one hundred" -> "one hundredth") — splitting on the last
+  // separator (space or hyphen) and replacing only that trailing word keeps this simple rather
+  // than pattern-matching every possible cardinal shape.
+  function convertOrdinal(matchText) {
+    const digitsText = matchText.replace(/(st|nd|rd|th)$/i, "");
+    const cardinalWords = convertCardinal(digitsText);
+    const lastSeparatorIndex = Math.max(cardinalWords.lastIndexOf(" "), cardinalWords.lastIndexOf("-"));
+    if (lastSeparatorIndex === -1) return ordinalWordFor(cardinalWords);
+
+    const prefix = cardinalWords.slice(0, lastSeparatorIndex + 1);
+    const lastWord = cardinalWords.slice(lastSeparatorIndex + 1);
+    return `${prefix}${ordinalWordFor(lastWord)}`;
+  }
+
+  // research.md Decision 2: a fixed priority-ordered scan. Each detector below returns matches
+  // as {start, end, match} in the given text; detectNumericEntities merges them left-to-right,
+  // letting an earlier-priority detector's match claim its range so no later detector can
+  // re-match a sub-span of it (e.g. currency claims "$1998" before the year detector ever runs
+  // over that range). Bounded, non-nested regex quantifiers throughout (research.md Decision 4)
+  // — no pattern nests one unbounded quantifier inside another, keeping detection linear in
+  // input length regardless of digit-run or separator-run size.
+  const CARDINAL_PATTERN = /\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?/g;
+  const CURRENCY_PATTERN = /[$£€](?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:k|m|mn|million|b|bn|billion|t|tn|trillion)?\b/gi;
+  const CODE_LABEL_PATTERN = /(?:PIN|code|ext|extension|ID|#)\s*(\d[\d\s-]*\d|\d)/gi;
+  const PHONE_SHAPED_PATTERN = /\+?\d{1,4}(?:[\s-]\d{2,4}){2,}/g;
+  const PERCENTAGE_PATTERN = /\d+(?:\.\d+)?%/g;
+  const ORDINAL_PATTERN = /\d+(?:st|nd|rd|th)\b/gi;
+  const DECIMAL_PATTERN = /\d+\.\d+/g;
+
+  function findNonOverlapping(text, pattern, category, claimed) {
+    const matches = [];
+    const regex = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (claimed.some((range) => start < range.end && end > range.start)) continue;
+      matches.push({ category, start, end, match: match[0] });
+    }
+    return matches;
+  }
+
+  function claimEntities(matches, claimed, entities, spokenFor) {
+    matches.forEach((entity) => {
+      entity.spoken = spokenFor(entity.match);
+      claimed.push({ start: entity.start, end: entity.end });
+      entities.push(entity);
+    });
+  }
+
+  function detectNumericEntities(text) {
+    const claimed = [];
+    const entities = [];
+
+    claimEntities(findNonOverlapping(text, CURRENCY_PATTERN, "currency", claimed), claimed, entities, convertCurrency);
+
+    const labelCodeMatches = findNonOverlapping(text, CODE_LABEL_PATTERN, "code", claimed)
+      .map((entity) => ({ ...entity, spokenDigits: entity.match.match(/\d[\d\s-]*\d|\d/)[0] }));
+    const phoneCodeMatches = findNonOverlapping(text, PHONE_SHAPED_PATTERN, "code", claimed)
+      .map((entity) => ({ ...entity, spokenDigits: entity.match }));
+    [...labelCodeMatches, ...phoneCodeMatches].forEach((entity) => {
+      const digitsOnly = entity.spokenDigits;
+      const labelPrefix = entity.match.slice(0, entity.match.length - digitsOnly.length);
+      entity.spoken = `${labelPrefix}${convertCodeDigits(digitsOnly)}`;
+      claimed.push({ start: entity.start, end: entity.end });
+      entities.push(entity);
+    });
+
+    // FR-005: a bare 4-digit number in 1000-2099 is a year UNLESS immediately preceded by a
+    // currency symbol or immediately followed by a unit/count word — those exceptions are
+    // checked via lookbehind/lookahead so a plain YEAR_PATTERN match can be rejected in place,
+    // falling through to the cardinal detector below rather than needing a separate pass.
+    const UNIT_WORD_PATTERN = /^(units?|items?|pages?|dollars?|pounds?|euros?)\b/i;
+    const YEAR_PATTERN = /(?<![$£€])\b(1[0-9]{3}|20[0-9]{2})\b/g;
+    const yearMatches = findNonOverlapping(text, YEAR_PATTERN, "year", claimed).filter((entity) => {
+      const following = text.slice(entity.end).replace(/^[\s,]*/, "");
+      return !UNIT_WORD_PATTERN.test(following);
+    });
+    claimEntities(yearMatches, claimed, entities, convertYear);
+
+    claimEntities(findNonOverlapping(text, PERCENTAGE_PATTERN, "percentage", claimed), claimed, entities, convertPercentage);
+    claimEntities(findNonOverlapping(text, ORDINAL_PATTERN, "ordinal", claimed), claimed, entities, convertOrdinal);
+    claimEntities(findNonOverlapping(text, DECIMAL_PATTERN, "decimal", claimed), claimed, entities, convertDecimal);
+
+    claimEntities(findNonOverlapping(text, CARDINAL_PATTERN, "cardinal", claimed), claimed, entities, convertCardinal);
+
+    entities.sort((a, b) => a.start - b.start);
+    return entities;
+  }
+
+  function normalizeSpokenText(text) {
+    const entities = detectNumericEntities(text);
+    if (!entities.length) return text;
+
+    let result = "";
+    let cursor = 0;
+    entities.forEach((entity) => {
+      result += text.slice(cursor, entity.start);
+      result += entity.spoken;
+      cursor = entity.end;
+    });
+    result += text.slice(cursor);
+    return result;
+  }
+
   function renderNarrationText(orderedBlocksByPage, policy) {
     const resolvedPolicy = resolveSpeechPolicy(policy);
     const narratableBlocks = orderedBlocksByPage
@@ -689,7 +967,7 @@
       .filter((block) => shouldSpeak(block.type, resolvedPolicy));
 
     const joinedText = narratableBlocks.map(joinBlockLinesWithDehyphenation).join("\n\n");
-    return stripCitationsAndUrls(joinedText);
+    return normalizeSpokenText(stripCitationsAndUrls(joinedText));
   }
 
   function splitLongText(text, maxLength) {
@@ -915,6 +1193,15 @@
     DEFAULT_SPEECH_POLICY,
     resolveSpeechPolicy,
     shouldSpeak,
+    convertCardinal,
+    detectNumericEntities,
+    normalizeSpokenText,
+    convertCodeDigits,
+    convertCurrency,
+    convertYear,
+    convertPercentage,
+    convertDecimal,
+    convertOrdinal,
   };
 
   if (typeof module !== "undefined" && module.exports) {
