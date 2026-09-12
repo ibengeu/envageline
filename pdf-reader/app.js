@@ -13,6 +13,685 @@
       .join("\n\n");
   }
 
+  // OWASP A08:2025 Mishandling of Exceptional Conditions - an item without geometry (a
+  // malformed PDF, or a caller that only has text) must not throw; it degrades to a
+  // zero-size box rather than blocking extraction, consistent with FR-010/FR-012's
+  // preserve-over-fail principle.
+  function extractPositionedItems(items, page, pageWidth, pageHeight) {
+    const width = pageWidth || 1;
+    const height = pageHeight || 1;
+
+    return items.map((item) => {
+      const transform = Array.isArray(item.transform) && item.transform.length >= 6
+        ? item.transform
+        : [1, 0, 0, 1, 0, 0];
+      const scaleX = Math.hypot(transform[0], transform[1]);
+      const scaleY = Math.hypot(transform[2], transform[3]);
+      const x = transform[4];
+      const yTop = transform[5];
+      const itemWidth = typeof item.width === "number" ? item.width : 0;
+      const itemHeight = typeof item.height === "number" ? item.height : 0;
+      const x0 = x / width;
+      const x1 = (x + itemWidth) / width;
+      const y0 = 1 - (yTop + itemHeight) / height;
+      const y1 = 1 - yTop / height;
+
+      return {
+        text: item.str,
+        page,
+        bbox: { x0, y0, x1, y1 },
+        fontSize: scaleY || scaleX || undefined,
+        fontName: item.fontName || undefined,
+      };
+    });
+  }
+
+  function itemCenterY(item) {
+    return (item.bbox.y0 + item.bbox.y1) / 2;
+  }
+
+  function medianLineHeight(items) {
+    const heights = items.map((item) => item.bbox.y1 - item.bbox.y0).sort((a, b) => a - b);
+    if (!heights.length) return 0;
+    const mid = Math.floor(heights.length / 2);
+    return heights.length % 2 ? heights[mid] : (heights[mid - 1] + heights[mid]) / 2;
+  }
+
+  function reconstructLines(items) {
+    if (!items.length) return [];
+
+    const threshold = 0.35 * medianLineHeight(items);
+    const sorted = [...items].sort((a, b) => itemCenterY(a) - itemCenterY(b) || a.bbox.x0 - b.bbox.x0);
+    const lines = [];
+    let currentGroup = [sorted[0]];
+    let currentCenterY = itemCenterY(sorted[0]);
+
+    for (let index = 1; index < sorted.length; index += 1) {
+      const item = sorted[index];
+      const centerY = itemCenterY(item);
+      if (Math.abs(centerY - currentCenterY) < threshold) {
+        currentGroup.push(item);
+      } else {
+        lines.push(buildLine(currentGroup));
+        currentGroup = [item];
+      }
+      currentCenterY = centerY;
+    }
+    lines.push(buildLine(currentGroup));
+
+    return lines;
+  }
+
+  function buildLine(groupItems) {
+    const ordered = [...groupItems].sort((a, b) => a.bbox.x0 - b.bbox.x0);
+    const x0 = Math.min(...ordered.map((item) => item.bbox.x0));
+    const y0 = Math.min(...ordered.map((item) => item.bbox.y0));
+    const x1 = Math.max(...ordered.map((item) => item.bbox.x1));
+    const y1 = Math.max(...ordered.map((item) => item.bbox.y1));
+
+    return {
+      page: ordered[0].page,
+      text: ordered.map((item) => item.text).join(" "),
+      bbox: { x0, y0, x1, y1 },
+      fontSize: ordered[0].fontSize,
+      fontName: ordered[0].fontName,
+      items: ordered,
+    };
+  }
+
+  function linesBelongToSameBlock(previous, next) {
+    const leftAligned = Math.abs(previous.bbox.x0 - next.bbox.x0) < 0.02;
+    const sameFontSize = !previous.fontSize || !next.fontSize || Math.abs(previous.fontSize - next.fontSize) < 0.5;
+    const lineHeight = previous.bbox.y1 - previous.bbox.y0 || 0.01;
+    const gap = next.bbox.y0 - previous.bbox.y1;
+    const consistentSpacing = gap < lineHeight * 1.5;
+
+    return leftAligned && sameFontSize && consistentSpacing;
+  }
+
+  function buildBlock(groupLines) {
+    const x0 = Math.min(...groupLines.map((line) => line.bbox.x0));
+    const y0 = Math.min(...groupLines.map((line) => line.bbox.y0));
+    const x1 = Math.max(...groupLines.map((line) => line.bbox.x1));
+    const y1 = Math.max(...groupLines.map((line) => line.bbox.y1));
+
+    return {
+      page: groupLines[0].page,
+      lines: groupLines,
+      text: groupLines.map((line) => line.text).join(" "),
+      bbox: { x0, y0, x1, y1 },
+      fontSize: groupLines[0].fontSize,
+      type: "body",
+      confidence: 0,
+      column: undefined,
+    };
+  }
+
+  // Synchronous, non-cryptographic string hash (FNV-1a). Block ids are structural identifiers,
+  // not the security-relevant content keys Principle IV governs (e.g. bookmark keys, which use
+  // SHA-256 via crypto.subtle) — they only need to be stable and collision-resistant enough to
+  // distinguish blocks within one document, and must be computable synchronously since block
+  // construction elsewhere in this pipeline is synchronous (research.md Decision 1).
+  function fnv1aHash(text) {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  function assignBlockIds(blocksByPage) {
+    return blocksByPage.map((blocks) =>
+      blocks.map((block) => {
+        const bboxKey = block.bbox
+          ? `${block.bbox.x0}:${block.bbox.y0}:${block.bbox.x1}:${block.bbox.y1}`
+          : "";
+        const id = fnv1aHash(`${block.page}::${block.text}::${bboxKey}`);
+        return { ...block, id };
+      }),
+    );
+  }
+
+  function reconstructBlocks(lines) {
+    if (!lines.length) return [];
+
+    const blocks = [];
+    let currentGroup = [lines[0]];
+
+    for (let index = 1; index < lines.length; index += 1) {
+      const previous = lines[index - 1];
+      const next = lines[index];
+      if (previous.page === next.page && linesBelongToSameBlock(previous, next)) {
+        currentGroup.push(next);
+      } else {
+        blocks.push(buildBlock(currentGroup));
+        currentGroup = [next];
+      }
+    }
+    blocks.push(buildBlock(currentGroup));
+
+    return blocks;
+  }
+
+  // A line's indentation/gap only counts as a paragraph-boundary signal when it departs from
+  // the block's OWN established pattern (research.md §3) — a uniform hanging indent or uniform
+  // wide spacing throughout a block is not a signal, per FR-007. Requires the departure to
+  // exceed both a fixed floor (avoids false positives from sub-pixel geometry noise) and a
+  // multiple of the block's own baseline (avoids false positives on a block whose "typical" gap
+  // is itself already large).
+  const PARAGRAPH_INDENT_MARGIN = 0.01;
+  const PARAGRAPH_GAP_MULTIPLIER = 1.6;
+
+  function median(values) {
+    if (!values.length) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  function lineStartsNewParagraph(line, previousLine, baselineMargin, baselineGap) {
+    const indentedBeyondMargin = line.bbox.x0 - baselineMargin > PARAGRAPH_INDENT_MARGIN;
+    const gap = line.bbox.y0 - previousLine.bbox.y1;
+    const gapExceedsTypical = baselineGap > 0 && gap > baselineGap * PARAGRAPH_GAP_MULTIPLIER;
+    return indentedBeyondMargin || gapExceedsTypical;
+  }
+
+  function splitBlockAtParagraphBoundaries(block) {
+    const lines = block.lines;
+    if (!lines || lines.length < 3) return [block];
+
+    const baselineMargin = Math.min(...lines.map((line) => line.bbox.x0));
+    const gaps = [];
+    for (let index = 1; index < lines.length; index += 1) {
+      gaps.push(lines[index].bbox.y0 - lines[index - 1].bbox.y1);
+    }
+    const baselineGap = median(gaps);
+
+    const groups = [[lines[0]]];
+    for (let index = 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      const previousLine = lines[index - 1];
+      if (lineStartsNewParagraph(line, previousLine, baselineMargin, baselineGap)) {
+        groups.push([line]);
+      } else {
+        groups[groups.length - 1].push(line);
+      }
+    }
+
+    if (groups.length === 1) return [block];
+    return groups.map((groupLines) => buildBlock(groupLines));
+  }
+
+  function splitParagraphBoundaries(blocks) {
+    return blocks.flatMap((block) => splitBlockAtParagraphBoundaries(block));
+  }
+
+  function normalizeCandidateText(text) {
+    return String(text || "")
+      .toLowerCase()
+      .replace(/\d+/g, "#")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function horizontalRegion(bbox) {
+    const centerX = (bbox.x0 + bbox.x1) / 2;
+    if (centerX < 0.4) return "left";
+    if (centerX > 0.6) return "right";
+    return "center";
+  }
+
+  const HEADER_ZONE = 0.12;
+  const FOOTER_ZONE = 0.88;
+
+  // A candidate must be CONFINED to the header/footer zone, not merely touch its edge — a
+  // tall block that starts near the top but extends far down the page (e.g. a whole page of
+  // text misgrouped into one block) is not a header/footer just because bbox.y0 is small.
+  function isConfinedToHeaderZone(bbox) {
+    return bbox.y0 <= HEADER_ZONE && bbox.y1 <= HEADER_ZONE * 1.5;
+  }
+
+  function isConfinedToFooterZone(bbox) {
+    return bbox.y1 >= FOOTER_ZONE && bbox.y0 >= FOOTER_ZONE - (1 - FOOTER_ZONE) * 0.5;
+  }
+
+  function collectEdgeCandidates(blocksByPage, zoneTest) {
+    const candidatesByKey = new Map();
+
+    blocksByPage.forEach((blocks, pageIndex) => {
+      blocks
+        .filter((block) => zoneTest(block.bbox))
+        .forEach((block) => {
+          const normalizedText = normalizeCandidateText(block.text);
+          if (!normalizedText) return;
+          const region = horizontalRegion(block.bbox);
+          const key = `${normalizedText}::${region}`;
+
+          if (!candidatesByKey.has(key)) {
+            candidatesByKey.set(key, { normalizedText, region, pages: [] });
+          }
+          candidatesByKey.get(key).pages.push(pageIndex);
+        });
+    });
+
+    return [...candidatesByKey.values()].filter((candidate) => candidate.pages.length >= 2);
+  }
+
+  // Margins above/below the document's own median body font size before a size difference
+  // counts as heading/footnote evidence (research.md §2) — a document-relative comparison,
+  // never a fixed absolute point size, per FR-001/FR-008.
+  const HEADING_FONT_SIZE_MARGIN = 1.5;
+  const FOOTNOTE_FONT_SIZE_MARGIN = 1.5;
+
+  function relativeFontSizeThreshold(bodyFontSizes, medianBodyFontSize, margin, direction) {
+    if (!medianBodyFontSize || bodyFontSizes.length < 3) return undefined;
+    const threshold = medianBodyFontSize + direction * margin;
+    const hasContrastingSize = bodyFontSizes.some((size) =>
+      direction > 0 ? size > threshold : size < threshold,
+    );
+    return hasContrastingSize ? threshold : undefined;
+  }
+
+  function analyzeDocumentStats(blocksByPage) {
+    const allBlocks = blocksByPage.flat();
+    const bodyFontSizes = allBlocks
+      .filter((block) => block.fontSize)
+      .map((block) => block.fontSize)
+      .sort((a, b) => a - b);
+    const medianBodyFontSize = bodyFontSizes.length
+      ? bodyFontSizes[Math.floor(bodyFontSizes.length / 2)]
+      : undefined;
+
+    return {
+      pageCount: blocksByPage.length,
+      medianBodyFontSize,
+      headingFontSizeThreshold: relativeFontSizeThreshold(
+        bodyFontSizes, medianBodyFontSize, HEADING_FONT_SIZE_MARGIN, 1,
+      ),
+      footnoteFontSizeThreshold: relativeFontSizeThreshold(
+        bodyFontSizes, medianBodyFontSize, FOOTNOTE_FONT_SIZE_MARGIN, -1,
+      ),
+      headerCandidates: collectEdgeCandidates(blocksByPage, isConfinedToHeaderZone),
+      footerCandidates: collectEdgeCandidates(blocksByPage, isConfinedToFooterZone),
+    };
+  }
+
+  const HEADER_FOOTER_MIN_REPETITION_RATE = 0.6;
+
+  function findMatchingCandidate(candidates, block) {
+    const normalizedText = normalizeCandidateText(block.text);
+    const region = horizontalRegion(block.bbox);
+    return candidates.find((candidate) => candidate.normalizedText === normalizedText && candidate.region === region);
+  }
+
+  function isConfidentHeaderFooterCandidate(candidate, pageCount) {
+    return candidate.pages.length / pageCount >= HEADER_FOOTER_MIN_REPETITION_RATE;
+  }
+
+  function isStandalonePageNumberText(text) {
+    return /^[-–—\s]*(\d+|[ivxlcdmIVXLCDM]+)[-–—\s]*$/.test(text.trim());
+  }
+
+  function isInEdgeZone(bbox) {
+    return isConfinedToHeaderZone(bbox) || isConfinedToFooterZone(bbox);
+  }
+
+  function hasStablePageNumberProgression(candidates) {
+    // A candidate list for page numbers groups by exact normalized text (research.md §5's
+    // digit-placeholder normalization collapses distinct numbers to the same key), so its own
+    // presence across pages already reflects stable formatting/position; require it to appear
+    // on at least two pages to avoid promoting a single-page fluke.
+    return candidates.pages.length >= 2;
+  }
+
+  // A bare page number (found via manual validation to sometimes be smaller than body text and
+  // sit in the footer zone, e.g. "3") is page-number-shaped text, not footnote content — this
+  // must be excluded regardless of whether the stricter, repetition-based page-number check
+  // (hasStablePageNumberProgression) also fires, since a single-page sample never satisfies that
+  // check for any individual page's own unique number.
+  function isFootnoteCandidate(block, stats) {
+    return (
+      stats.footnoteFontSizeThreshold !== undefined
+      && block.fontSize < stats.footnoteFontSizeThreshold
+      && isConfinedToFooterZone(block.bbox)
+      && !isStandalonePageNumberText(block.text)
+    );
+  }
+
+  // A block is caption-like when it is isolated from its page neighbors by a much larger gap
+  // than the page's own typical inter-block gap on both sides (a text-geometry proxy for
+  // "adjacent to a non-text region," since this pipeline never inspects image content directly
+  // — research.md §4) AND its font size differs from the document's body/heading profile,
+  // corroborating position with styling per FR-012.
+  const CAPTION_ISOLATION_GAP_MULTIPLIER = 3;
+
+  function isCaptionCandidate(block, blocksOnPage, stats) {
+    if (isInEdgeZone(block.bbox)) return false;
+    if (stats.medianBodyFontSize === undefined) return false;
+    if (Math.abs(block.fontSize - stats.medianBodyFontSize) < 1) return false;
+
+    const others = blocksOnPage.filter((other) => other !== block);
+    if (!others.length) return false;
+
+    const gaps = others.map((other) => {
+      if (other.bbox.y1 <= block.bbox.y0) return block.bbox.y0 - other.bbox.y1;
+      if (other.bbox.y0 >= block.bbox.y1) return other.bbox.y0 - block.bbox.y1;
+      return 0;
+    });
+    const typicalGap = median(
+      others.slice(0, -1).map((_, index) => Math.max(0, others[index + 1].bbox.y0 - others[index].bbox.y1)),
+    ) || 0.01;
+
+    const gapAbove = Math.min(...gaps.filter((_, index) => others[index].bbox.y1 <= block.bbox.y0), Infinity);
+    const gapBelow = Math.min(...gaps.filter((_, index) => others[index].bbox.y0 >= block.bbox.y1), Infinity);
+    const isolatedAbove = gapAbove === Infinity || gapAbove > typicalGap * CAPTION_ISOLATION_GAP_MULTIPLIER;
+    const isolatedBelow = gapBelow === Infinity || gapBelow > typicalGap * CAPTION_ISOLATION_GAP_MULTIPLIER;
+
+    return isolatedAbove && isolatedBelow;
+  }
+
+  const TABLE_MIN_LINE_COUNT = 3;
+
+  // Reuses findStableColumnGap's core "is there a region-spanning gap with items on both sides"
+  // technique (built for two-column page layout) at CELL granularity — each line's own items,
+  // not the merged line bbox, are what can show a stable left/right split — looking for that
+  // gap to hold across 3+ lines as the corroborating "grid" signal FR-010 requires (a single
+  // aligned pair of lines is not enough, per FR-012).
+  function blockLooksLikeTable(block) {
+    const lines = block.lines;
+    if (!lines || lines.length < TABLE_MIN_LINE_COUNT) return false;
+    if (!lines.every((line) => Array.isArray(line.items) && line.items.length >= 2)) return false;
+
+    const allItems = lines.flatMap((line) => line.items);
+    const top = Math.min(...allItems.map((item) => item.bbox.y0));
+    const bottom = Math.max(...allItems.map((item) => item.bbox.y1));
+    const gap = findStableColumnGap(allItems, top, bottom);
+    if (!gap) return false;
+
+    const linesWithBothSides = lines.filter((line) =>
+      line.items.some((item) => item.bbox.x1 <= gap.gapStart + 1e-6)
+      && line.items.some((item) => item.bbox.x0 >= gap.gapEnd - 1e-6),
+    );
+    return linesWithBothSides.length >= TABLE_MIN_LINE_COUNT;
+  }
+
+  function classifyBlocks(blocksByPage, stats) {
+    const pageCount = stats.pageCount || blocksByPage.length;
+
+    return blocksByPage.map((blocks) =>
+      blocks.map((block) => {
+        const isEdgeLine = isInEdgeZone(block.bbox);
+
+        if (isEdgeLine && isStandalonePageNumberText(block.text)) {
+          const candidate = findMatchingCandidate(
+            [...stats.headerCandidates, ...stats.footerCandidates],
+            block,
+          );
+          if (candidate && hasStablePageNumberProgression(candidate)) {
+            return { ...block, type: "page-number", confidence: candidate.pages.length / pageCount };
+          }
+        }
+
+        const headerCandidate = findMatchingCandidate(stats.headerCandidates, block);
+        if (headerCandidate && isConfidentHeaderFooterCandidate(headerCandidate, pageCount)) {
+          return { ...block, type: "header", confidence: headerCandidate.pages.length / pageCount };
+        }
+
+        const footerCandidate = findMatchingCandidate(stats.footerCandidates, block);
+        if (footerCandidate && isConfidentHeaderFooterCandidate(footerCandidate, pageCount)) {
+          return { ...block, type: "footer", confidence: footerCandidate.pages.length / pageCount };
+        }
+
+        if (
+          stats.headingFontSizeThreshold !== undefined
+          && block.fontSize > stats.headingFontSizeThreshold
+          && block.text.trim().length > 1
+        ) {
+          return { ...block, type: "heading", confidence: 1 };
+        }
+
+        if (isFootnoteCandidate(block, stats)) {
+          return { ...block, type: "footnote", confidence: 1 };
+        }
+
+        if (blockLooksLikeTable(block)) {
+          return { ...block, type: "table", confidence: 1 };
+        }
+
+        if (isCaptionCandidate(block, blocks, stats)) {
+          return { ...block, type: "caption", confidence: 1 };
+        }
+
+        return block;
+      }),
+    );
+  }
+
+  const FULL_WIDTH_THRESHOLD = 0.75;
+  const COLUMN_GAP_MIN_HEIGHT_COVERAGE = 0.5;
+  const MIN_COLUMN_GAP_WIDTH = 0.03;
+
+  function isFullWidthBlock(block, pageBodyWidth) {
+    return block.bbox.x1 - block.bbox.x0 >= pageBodyWidth * FULL_WIDTH_THRESHOLD;
+  }
+
+  function findStableColumnGap(narrowBlocks, bodyTop, bodyBottom) {
+    const bodyHeight = bodyBottom - bodyTop || 1;
+    const boundaries = [...new Set(narrowBlocks.flatMap((block) => [block.bbox.x0, block.bbox.x1]))].sort((a, b) => a - b);
+
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const gapStart = boundaries[index];
+      const gapEnd = boundaries[index + 1];
+      const gapWidth = gapEnd - gapStart;
+      if (gapWidth < MIN_COLUMN_GAP_WIDTH) continue;
+
+      const blocksLeft = narrowBlocks.filter((block) => block.bbox.x1 <= gapStart + 1e-6);
+      const blocksRight = narrowBlocks.filter((block) => block.bbox.x0 >= gapEnd - 1e-6);
+      if (!blocksLeft.length || !blocksRight.length) continue;
+
+      const spanningHeight = (blocks) => {
+        const minY = Math.min(...blocks.map((block) => block.bbox.y0));
+        const maxY = Math.max(...blocks.map((block) => block.bbox.y1));
+        return maxY - minY;
+      };
+      const coverage = Math.min(spanningHeight(blocksLeft), spanningHeight(blocksRight)) / bodyHeight;
+      if (coverage >= COLUMN_GAP_MIN_HEIGHT_COVERAGE) {
+        return { gapStart, gapEnd };
+      }
+    }
+
+    return null;
+  }
+
+  function detectColumns(blocksByPage) {
+    return blocksByPage.map((blocks) => {
+      if (!blocks.length) return blocks;
+
+      const bodyLeft = Math.min(...blocks.map((block) => block.bbox.x0));
+      const bodyRight = Math.max(...blocks.map((block) => block.bbox.x1));
+      const bodyTop = Math.min(...blocks.map((block) => block.bbox.y0));
+      const bodyBottom = Math.max(...blocks.map((block) => block.bbox.y1));
+      const bodyWidth = bodyRight - bodyLeft || 1;
+
+      const narrowBlocks = blocks.filter((block) => !isFullWidthBlock(block, bodyWidth));
+      const gap = findStableColumnGap(narrowBlocks, bodyTop, bodyBottom);
+
+      if (!gap) {
+        return blocks.map((block) => ({ ...block, column: undefined }));
+      }
+
+      return blocks.map((block) => {
+        if (isFullWidthBlock(block, bodyWidth)) return { ...block, column: undefined };
+        const center = (block.bbox.x0 + block.bbox.x1) / 2;
+        return { ...block, column: center <= gap.gapStart ? 0 : 1 };
+      });
+    });
+  }
+
+  function resolveTwoColumnOrder(blocks) {
+    const sortByTop = (list) => [...list].sort((a, b) => a.bbox.y0 - b.bbox.y0);
+    const fullWidth = sortByTop(blocks.filter((block) => block.column === undefined));
+    const leftColumn = sortByTop(blocks.filter((block) => block.column === 0));
+    const rightColumn = sortByTop(blocks.filter((block) => block.column === 1));
+
+    // A full-width block (title, section heading spanning both columns) breaks the page into
+    // segments; within each segment the left column reads to completion, then the right
+    // column, then the next full-width block (research.md §8) — a full-width block never
+    // splits reading mid-way through either column, since "read the left column, then the
+    // right column" only makes sense as whole runs between such breaks.
+    const boundaries = [-Infinity, ...fullWidth.map((block) => block.bbox.y0), Infinity];
+    const ordered = [];
+
+    for (let segment = 0; segment < boundaries.length - 1; segment += 1) {
+      const segmentStart = boundaries[segment];
+      const segmentEnd = boundaries[segment + 1];
+      const inSegment = (block) => block.bbox.y0 >= segmentStart && block.bbox.y0 < segmentEnd;
+
+      ordered.push(...leftColumn.filter(inSegment));
+      ordered.push(...rightColumn.filter(inSegment));
+      if (segment < fullWidth.length) ordered.push(fullWidth[segment]);
+    }
+
+    return ordered;
+  }
+
+  function resolveReadingOrder(blocksByPage, columnLayoutByPage) {
+    return blocksByPage.map((blocks, pageIndex) => {
+      const layout = columnLayoutByPage[pageIndex];
+      if (layout !== "two-column") return blocks;
+      return resolveTwoColumnOrder(blocks);
+    });
+  }
+
+  // The single default speech policy (data-model.md): reproduces NARRATION_EXCLUDED_TYPES's old
+  // per-type behavior exactly (FR-001/FR-002). speakTitles/speakCitations/speakReferences are
+  // forward-compatible fields with no effect yet — no distinct title/citation/reference block
+  // type exists in this pipeline (research.md Decision 1, spec 005).
+  const DEFAULT_SPEECH_POLICY = {
+    speakTitles: true,
+    speakHeadings: true,
+    speakPageNumbers: false,
+    speakHeaders: false,
+    speakFooters: false,
+    speakFootnotes: false,
+    speakCaptions: false,
+    speakCitations: false,
+    speakReferences: false,
+    tables: "skip",
+  };
+
+  function resolveSpeechPolicy(overrides) {
+    return { ...DEFAULT_SPEECH_POLICY, ...(overrides || {}) };
+  }
+
+  // The single source of truth for whether a block type should be spoken under a given policy
+  // (research.md Decision 2, spec 005) — both toAstBlock's speak-flag derivation and
+  // renderNarrationText's inclusion filter call this instead of each independently re-encoding
+  // the decision, closing the two-copies drift risk NARRATION_EXCLUDED_TYPES had.
+  function shouldSpeak(type, policy) {
+    switch (type) {
+      case "heading": return policy.speakHeadings;
+      case "header": return policy.speakHeaders;
+      case "footer": return policy.speakFooters;
+      case "page-number": return policy.speakPageNumbers;
+      case "footnote": return policy.speakFootnotes;
+      case "caption": return policy.speakCaptions;
+      case "table": return policy.tables !== "skip";
+      default: return true;
+    }
+  }
+
+  // Maps one already-classified, already-id-assigned, reading-order-resolved block (the internal
+  // working shape used by classifyBlocks/resolveReadingOrder) to the public Block schema
+  // (data-model.md): carries forward id/page/type/text/bbox/confidence, nests fontSize under
+  // style.fontSize, assigns readingOrder from position in the flattened sequence, and derives
+  // speak from the given speech policy via the single shouldSpeak source of truth (spec 005).
+  function toAstBlock(block, readingOrder, policy) {
+    const astBlock = {
+      id: block.id,
+      page: block.page,
+      type: block.type,
+      text: block.text,
+      readingOrder,
+      speak: shouldSpeak(block.type, policy),
+    };
+    if (block.bbox) astBlock.bbox = block.bbox;
+    if (block.fontSize !== undefined) astBlock.style = { fontSize: block.fontSize };
+    if (block.confidence !== undefined) astBlock.confidence = block.confidence;
+    return astBlock;
+  }
+
+  // Single linear pass (research.md Decision 2): each heading-typed block starts a new section
+  // under that heading's title; any blocks before the first heading (or every block, when there
+  // is no heading anywhere) form one leading implicit section with no title.
+  function groupBlocksIntoSections(astBlocks) {
+    const sections = [];
+    let currentSection = null;
+
+    astBlocks.forEach((block) => {
+      if (block.type === "heading" || !currentSection) {
+        currentSection = {
+          id: `section-${block.id}`,
+          type: "section",
+          level: 1,
+          title: block.type === "heading" ? block.text : undefined,
+          blocks: [],
+        };
+        sections.push(currentSection);
+      }
+      currentSection.blocks.push(block);
+    });
+
+    return sections;
+  }
+
+  function buildDocumentAst(orderedBlocksByPage, policy) {
+    const resolvedPolicy = resolveSpeechPolicy(policy);
+    const astBlocks = orderedBlocksByPage.flat().map((block, index) => toAstBlock(block, index, resolvedPolicy));
+
+    return {
+      title: "",
+      sections: astBlocks.length ? groupBlocksIntoSections(astBlocks) : [],
+    };
+  }
+
+  const CITATION_MARKER_PATTERN = /\[\d+(?:[,\-–]\s*\d+)*\]/g;
+  const BARE_URL_PATTERN = /https?:\/\/\S+/g;
+
+  function joinBlockLinesWithDehyphenation(block) {
+    const lines = block.lines && block.lines.length ? block.lines : [{ text: block.text }];
+    let joined = "";
+
+    lines.forEach((line, index) => {
+      if (index === 0) {
+        joined = line.text;
+        return;
+      }
+      if (/[A-Za-z]-$/.test(joined) && /^[a-z]/.test(line.text)) {
+        joined = `${joined.slice(0, -1)}${line.text}`;
+      } else {
+        joined = `${joined} ${line.text}`;
+      }
+    });
+
+    return joined;
+  }
+
+  function stripCitationsAndUrls(text) {
+    return text.replace(CITATION_MARKER_PATTERN, "").replace(BARE_URL_PATTERN, "").replace(/[ \t]{2,}/g, " ").trim();
+  }
+
+  function renderNarrationText(orderedBlocksByPage, policy) {
+    const resolvedPolicy = resolveSpeechPolicy(policy);
+    const narratableBlocks = orderedBlocksByPage
+      .flat()
+      .filter((block) => shouldSpeak(block.type, resolvedPolicy));
+
+    const joinedText = narratableBlocks.map(joinBlockLinesWithDehyphenation).join("\n\n");
+    return stripCitationsAndUrls(joinedText);
+  }
+
   function splitLongText(text, maxLength) {
     const words = text.split(/\s+/).filter(Boolean);
     const chunks = [];
@@ -61,6 +740,54 @@
     return chunks;
   }
 
+  function normalizedWordSet(text) {
+    return new Set(String(text || "").toLowerCase().match(/[a-z0-9']+/g) || []);
+  }
+
+  function wordOverlapScore(a, b) {
+    if (!a.size || !b.size) return 0;
+    let shared = 0;
+    for (const word of a) {
+      if (b.has(word)) shared += 1;
+    }
+    return shared / Math.max(a.size, b.size);
+  }
+
+  // Maps each display paragraph to its best-matching narration chunk index, for click-to-jump
+  // in the literal (default) reading pane. Display text and narration text can diverge
+  // (headers/footers/citations/URLs removed, columns reordered, per FR-009/research.md §10),
+  // so an exact match isn't always possible — a paragraph with no good match (e.g. a removed
+  // header) falls back to the nearest chunk by position rather than mapping to nothing.
+  function mapParagraphsToChunks(paragraphs, chunks) {
+    if (!chunks.length) return paragraphs.map(() => null);
+
+    const chunkWordSets = chunks.map(normalizedWordSet);
+    const rawMatches = paragraphs.map((paragraph) => {
+      const paragraphWords = normalizedWordSet(paragraph);
+      let bestIndex = -1;
+      let bestScore = 0;
+      chunkWordSets.forEach((chunkWords, index) => {
+        const score = wordOverlapScore(paragraphWords, chunkWords);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = index;
+        }
+      });
+      return bestScore > 0 ? bestIndex : null;
+    });
+
+    let lastKnown = 0;
+    const forwardFilled = rawMatches.map((match) => {
+      if (match !== null) {
+        lastKnown = match;
+        return match;
+      }
+      return lastKnown;
+    });
+
+    return forwardFilled;
+  }
+
   function renderExtractedText(container, text) {
     // OWASP A07:2025 Injection - PDF content is untrusted, so render only as text.
     container.textContent = text;
@@ -98,40 +825,72 @@
     return end;
   }
 
-  function renderChunkedText(container, chunks, activeIndex = -1) {
-    if (!container.ownerDocument || typeof container.replaceChildren !== "function") {
-      renderExtractedText(container, chunks.join(" "));
-      return;
+  const LARGE_DOCUMENT_PAGE_THRESHOLD = 200;
+
+  function checkHasRealWorker(probeRealWorker) {
+    const hasWorkerConstructor = typeof globalScope.Worker === "function";
+
+    // Always run the caller's probe when given one, even if no Worker constructor exists —
+    // extractPdfText's probe is the actual document load, which must happen exactly once
+    // regardless of what this check concludes about worker availability.
+    if (typeof probeRealWorker !== "function") return hasWorkerConstructor;
+    if (!hasWorkerConstructor) return probeRealWorker().then(() => false).catch(() => false);
+
+    const previousWarn = globalScope.console && globalScope.console.warn;
+    let sawFakeWorkerWarning = false;
+    try {
+      if (globalScope.console) {
+        globalScope.console.warn = (...args) => {
+          if (String(args[0] || "").includes("Setting up fake worker")) {
+            sawFakeWorkerWarning = true;
+          }
+          if (typeof previousWarn === "function") previousWarn.apply(globalScope.console, args);
+        };
+      }
+      return probeRealWorker().then(() => !sawFakeWorkerWarning).catch(() => false);
+    } finally {
+      if (globalScope.console) globalScope.console.warn = previousWarn;
+    }
+  }
+
+  function checkStorageAccess(propertyName) {
+    try {
+      const value = globalScope[propertyName];
+      return Boolean(value);
+    } catch {
+      return false;
+    }
+  }
+
+  // Determines which relevant capabilities are actually available in the current environment
+  // before extraction proceeds (FR-007/FR-011/FR-012). Never throws — every underlying check is
+  // wrapped so a thrown error is treated as that capability being unavailable, per FR-012's
+  // conservative-default requirement. Without `probeRealWorker`, hasRealWorker reflects only
+  // whether a Worker constructor exists. `probeRealWorker` is an optional injectable async
+  // function that additionally watches for PDF.js's known "Setting up fake worker." console
+  // warning during whatever it does, for callers with a disposable load to run it against.
+  // `extractPdfText` does not use this parameter — its real, non-disposable document load
+  // can't safely own that probe's error-swallowing (see loadDocumentWatchingForFakeWorker),
+  // so it observes the same warning around its own load instead and folds the result in after.
+  function assessCapabilities(pageCount, { probeRealWorker } = {}) {
+    let hasRealWorkerResult;
+    try {
+      hasRealWorkerResult = checkHasRealWorker(probeRealWorker);
+    } catch {
+      hasRealWorkerResult = false;
     }
 
-    const doc = container.ownerDocument;
-    const nodes = [];
-    let activeSpan = null;
-    chunks.forEach((chunk, index) => {
-      const span = doc.createElement("span");
-      span.className = index === activeIndex ? "speech-chunk is-active" : "speech-chunk";
-      if (typeof span.setAttribute === "function") {
-        span.setAttribute("data-chunk-index", String(index));
-      }
-      span.textContent = chunk;
-      nodes.push(span);
-      if (index === activeIndex) activeSpan = span;
-      if (index < chunks.length - 1) {
-        nodes.push(doc.createTextNode(" "));
-      }
+    const buildResult = (hasRealWorker) => ({
+      hasRealWorker,
+      hasLocalStorage: checkStorageAccess("localStorage"),
+      hasIndexedDb: checkStorageAccess("indexedDB"),
+      pageCount,
     });
 
-    container.replaceChildren(...nodes);
-
-    if (activeSpan && typeof activeSpan.scrollIntoView === "function") {
-      const reduceMotion = globalScope.matchMedia
-        && globalScope.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      activeSpan.scrollIntoView({
-        block: "center",
-        inline: "nearest",
-        behavior: reduceMotion ? "auto" : "smooth",
-      });
+    if (hasRealWorkerResult && typeof hasRealWorkerResult.then === "function") {
+      return hasRealWorkerResult.catch(() => false).then(buildResult);
     }
+    return buildResult(hasRealWorkerResult);
   }
 
   const api = {
@@ -139,7 +898,23 @@
     splitIntoSpeechChunks,
     renderExtractedText,
     renderSpeechFocus,
-    renderChunkedText,
+    extractPositionedItems,
+    reconstructLines,
+    reconstructBlocks,
+    splitParagraphBoundaries,
+    analyzeDocumentStats,
+    buildPipelineOutput,
+    classifyBlocks,
+    detectColumns,
+    resolveReadingOrder,
+    renderNarrationText,
+    mapParagraphsToChunks,
+    assessCapabilities,
+    assignBlockIds,
+    buildDocumentAst,
+    DEFAULT_SPEECH_POLICY,
+    resolveSpeechPolicy,
+    shouldSpeak,
   };
 
   if (typeof module !== "undefined" && module.exports) {
@@ -154,26 +929,30 @@
     text: "",
     chunks: [],
     chunkIndex: 0,
-    utterance: null,
     audio: null,
     audioUrl: "",
-    voices: [],
     isPaused: false,
     highlightOffset: 0,
     loadId: 0,
-    speechSupported: false,
     playbackActive: false,
     playbackId: 0,
     localAudioCache: new Map(),
-    visibilityPaused: false,
+    bookmarkKey: null,
+    hasBookmark: false,
+    paragraphChunkMap: null,
   };
+
+  const BOOKMARK_VERSION = 1;
+  const BOOKMARK_PREFIX = `pdf-reader-bookmark:v${BOOKMARK_VERSION}:`;
 
   const elements = {
     fileInput: document.querySelector("#fileInput"),
     dropZone: document.querySelector("#dropZone"),
+    documentControls: document.querySelector("#documentControls"),
     fileName: document.querySelector("#fileName"),
     status: document.querySelector("#status"),
     statusDot: document.querySelector("#statusDot"),
+    railPulse: document.querySelector("#railPulse"),
     pages: document.querySelector("#pages"),
     wordCount: document.querySelector("#wordCount"),
     textOutput: document.querySelector("#textOutput"),
@@ -181,17 +960,12 @@
     pause: document.querySelector("#pause"),
     resume: document.querySelector("#resume"),
     stop: document.querySelector("#stop"),
-    ttsProvider: document.querySelector("#ttsProvider"),
+    bookmark: document.querySelector("#bookmark"),
     localEndpoint: document.querySelector("#localEndpoint"),
-    localSettings: document.querySelector("#localSettings"),
     voiceField: document.querySelector("#voiceField"),
-    voiceHelp: document.querySelector("#voiceHelp"),
-    pitchField: document.querySelector("#pitchField"),
     voice: document.querySelector("#voice"),
     rate: document.querySelector("#rate"),
-    pitch: document.querySelector("#pitch"),
     rateValue: document.querySelector("#rateValue"),
-    pitchValue: document.querySelector("#pitchValue"),
     progress: document.querySelector("#progress"),
   };
 
@@ -201,9 +975,8 @@
 
   function updateButtons() {
     const hasText = state.chunks.length > 0;
-    const provider = elements.ttsProvider.value;
-    const canSpeak = hasText && (provider === "local" || state.speechSupported);
-    const isPlaying = (state.utterance || state.audio) && !state.isPaused;
+    const canSpeak = hasText;
+    const isPlaying = state.audio && !state.isPaused;
 
     // Show Play only when not actively playing or paused mid-session
     elements.play.hidden = state.isPaused || isPlaying;
@@ -219,11 +992,111 @@
 
     elements.stop.disabled = !hasText;
 
+    if (elements.bookmark) {
+      elements.bookmark.disabled = !hasText || !state.bookmarkKey;
+      elements.bookmark.textContent = state.hasBookmark ? "Remove bookmark" : `Bookmark passage ${state.chunkIndex + 1}`;
+      elements.bookmark.setAttribute("aria-pressed", String(state.hasBookmark));
+    }
+
     // Status dot reflects playback state
     if (elements.statusDot) {
       elements.statusDot.classList.toggle("is-playing", !!isPlaying);
       elements.statusDot.classList.toggle("is-paused", !!state.isPaused);
     }
+
+    if (elements.railPulse) {
+      elements.railPulse.classList.toggle("is-active", !!isPlaying || !!state.isPaused);
+    }
+  }
+
+  async function bookmarkKeyForFile(file) {
+    // OWASP A05:2025 Cryptographic Failures — use a one-way PDF-byte digest as a local key.
+    // The key avoids persisting filenames, paths, excerpts, or document content.
+    const cryptoApi = globalScope.crypto;
+    if (!cryptoApi || !cryptoApi.subtle || typeof cryptoApi.subtle.digest !== "function") return null;
+    try {
+      const bytes = await file.arrayBuffer();
+      const digest = await cryptoApi.subtle.digest("SHA-256", bytes);
+      const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      return `${BOOKMARK_PREFIX}${hex}`;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function bookmarkStorage() {
+    try {
+      return globalScope.localStorage || null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function readBookmark(key, chunkCount) {
+    const storage = bookmarkStorage();
+    if (!key || !storage) return null;
+    try {
+      const raw = storage.getItem(key);
+      if (!raw) return null;
+      const value = JSON.parse(raw);
+      const isValid = value
+        && value.version === BOOKMARK_VERSION
+        && Number.isInteger(value.index)
+        && value.index >= 0
+        && value.index < chunkCount
+        && Number.isFinite(value.savedAt)
+        && value.savedAt > 0;
+      if (!isValid) {
+        storage.removeItem(key);
+        return null;
+      }
+      return value;
+    } catch (_error) {
+      try { storage.removeItem(key); } catch (_removeError) { /* storage remains optional */ }
+      return null;
+    }
+  }
+
+  function saveBookmark() {
+    const storage = bookmarkStorage();
+    if (!state.bookmarkKey || !state.chunks.length || !storage
+      || !Number.isInteger(state.chunkIndex) || state.chunkIndex < 0 || state.chunkIndex >= state.chunks.length) {
+      setStatus("Couldn't save bookmark. Reading is still available.");
+      return;
+    }
+    try {
+      storage.setItem(state.bookmarkKey, JSON.stringify({
+        version: BOOKMARK_VERSION,
+        index: state.chunkIndex,
+        savedAt: Date.now(),
+      }));
+      state.hasBookmark = true;
+      updateButtons();
+      setStatus(`Bookmark saved for passage ${state.chunkIndex + 1}.`);
+    } catch (_error) {
+      setStatus("Couldn't save bookmark. Reading is still available.");
+    }
+  }
+
+  function removeBookmark() {
+    const storage = bookmarkStorage();
+    if (!state.bookmarkKey || !storage) {
+      setStatus("Couldn't remove bookmark. Reading is still available.");
+      return;
+    }
+    try {
+      storage.removeItem(state.bookmarkKey);
+      state.hasBookmark = false;
+      updateButtons();
+      setStatus("Bookmark removed.");
+    } catch (_error) {
+      setStatus("Couldn't remove bookmark. Reading is still available.");
+    }
+  }
+
+  function toggleBookmark() {
+    if (state.hasBookmark) removeBookmark();
+    else saveBookmark();
   }
 
   function updateProgress() {
@@ -234,61 +1107,86 @@
     elements.progress.value = Math.round((state.chunkIndex / state.chunks.length) * 100);
   }
 
+  // FR-009: the reading pane MUST show literal, unmodified, original-order extracted text,
+  // independent of narration cleanup/reordering (headers, footers, page numbers, citations,
+  // URLs, dehyphenation, column reordering). This is the reading pane's only view.
+  //
+  // Paragraph numbers are rendered entirely via CSS counters (see .literal-paragraph::before
+  // in styles.css) rather than measured in JS — a JS approach that measures each paragraph's
+  // rendered height to place gutter numbers is fragile (layout timing, reflow-on-resize) and
+  // was replaced with this simpler, always-correct approach.
+  function renderLiteralTextWithLineNumbers(container, text, activeIndex = -1) {
+    const doc = container.ownerDocument;
+    if (!doc || typeof container.replaceChildren !== "function") {
+      renderExtractedText(container, text);
+      return;
+    }
+
+    const paragraphs = String(text || "").split(/\n\n/).filter((paragraph) => paragraph.length > 0);
+    if (!paragraphs.length) {
+      renderExtractedText(container, text);
+      return;
+    }
+
+    if (!state.paragraphChunkMap || state.paragraphChunkMap.length !== paragraphs.length) {
+      state.paragraphChunkMap = mapParagraphsToChunks(paragraphs, state.chunks);
+    }
+
+    let activeBlock = null;
+    const paragraphBlocks = paragraphs.map((paragraph, index) => {
+      const block = doc.createElement("button");
+      block.type = "button";
+      block.className = "literal-paragraph";
+      block.textContent = paragraph;
+      const chunkIndex = state.paragraphChunkMap[index];
+      if (chunkIndex !== null && chunkIndex !== undefined) {
+        block.setAttribute("data-chunk-index", String(chunkIndex));
+        block.setAttribute("aria-label", "Start reading near this passage");
+        if (chunkIndex === activeIndex) {
+          block.className = "literal-paragraph is-active";
+          if (typeof block.setAttribute === "function") block.setAttribute("aria-current", "true");
+          activeBlock = block;
+        }
+      } else if (typeof block.setAttribute === "function") {
+        block.setAttribute("disabled", "true");
+      }
+      return block;
+    });
+
+    container.replaceChildren(...paragraphBlocks);
+    if (activeBlock && typeof activeBlock.scrollIntoView === "function") {
+      const reduceMotion = globalScope.matchMedia
+        && globalScope.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      activeBlock.scrollIntoView({
+        block: "center",
+        inline: "nearest",
+        behavior: reduceMotion ? "auto" : "smooth",
+      });
+    }
+  }
+
   function renderPlaybackText(activeIndex = -1) {
-    if (!state.chunks.length) {
-      renderExtractedText(elements.textOutput, state.text || "Choose a PDF to preview extracted text.");
-      return;
-    }
-    renderChunkedText(elements.textOutput, state.chunks, activeIndex);
-  }
-
-  function selectedVoice() {
-    const [, , selectedVoiceUri] = elements.voice.value.split("|");
-    return state.voices.find((voice) => voice.voiceURI === selectedVoiceUri) || null;
-  }
-
-  function loadVoices() {
-    if (!state.speechSupported) return;
-    state.voices = window.speechSynthesis.getVoices();
-    const preferred = state.voices.find((voice) => /natural|premium|enhanced|neural/i.test(voice.name))
-      || state.voices.find((voice) => voice.lang && voice.lang.startsWith(navigator.language.slice(0, 2)))
-      || state.voices[0];
-
-    if (!state.voices.length) {
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "No voices available";
-      elements.voice.replaceChildren(option);
-      elements.voice.disabled = true;
-      return;
-    }
-
-    elements.voice.disabled = false;
-    elements.voice.replaceChildren(...state.voices.map((voice) => {
-      const option = document.createElement("option");
-      option.value = `${voice.name}|${voice.lang}|${voice.voiceURI}`;
-      option.textContent = `${voice.name} (${voice.lang})`;
-      if (preferred && voice.voiceURI === preferred.voiceURI) option.selected = true;
-      return option;
-    }));
+    renderLiteralTextWithLineNumbers(elements.textOutput, state.text, activeIndex);
   }
 
   function clearDocumentState(message = "Choose a PDF to begin.") {
     state.text = "";
     state.chunks = [];
     state.chunkIndex = 0;
-    state.utterance = null;
     state.audio = null;
     state.isPaused = false;
     state.highlightOffset = 0;
     state.playbackActive = false;
     state.playbackId += 1;
-    state.visibilityPaused = false;
+    state.bookmarkKey = null;
+    state.hasBookmark = false;
+    state.paragraphChunkMap = null;
     state.localAudioCache.clear();
     ewma.reset();
     elements.fileName.textContent = "No file selected";
     elements.pages.textContent = "0";
     elements.wordCount.textContent = "0";
+    elements.documentControls.hidden = true;
     renderExtractedText(elements.textOutput, "Choose a PDF to preview extracted text.");
     setStatus(message);
     updateProgress();
@@ -296,9 +1194,6 @@
   }
 
   function stopSpeech() {
-    if (state.speechSupported) {
-      window.speechSynthesis.cancel();
-    }
     if (state.audio) {
       state.audio.pause();
       state.audio.currentTime = 0;
@@ -321,13 +1216,11 @@
 
   function failPlayback(message) {
     stopSpeech();
-    state.utterance = null;
     state.audio = null;
     state.isPaused = false;
     state.highlightOffset = 0;
     state.playbackActive = false;
     state.playbackId += 1;
-    state.visibilityPaused = false;
     if (state.text) renderPlaybackText();
     setStatus(message);
     updateButtons();
@@ -582,27 +1475,6 @@
     }
   }
 
-  function resumeLocalPlayback() {
-    if (!state.playbackActive || elements.ttsProvider.value !== "local") return;
-    if (state.audio && state.isPaused) {
-      state.visibilityPaused = false;
-      state.isPaused = false;
-      state.audio.play().catch(() => {
-        if (state.chunkIndex < state.chunks.length) {
-          speakLocalChunk();
-        }
-      });
-      setStatus("Reading resumed.");
-      updateButtons();
-      return;
-    }
-
-    if (!state.audio && state.chunkIndex < state.chunks.length) {
-      state.visibilityPaused = false;
-      speakLocalChunk();
-    }
-  }
-
   async function loadLocalVoices() {
     const endpoint = elements.localEndpoint.value.trim();
     if (!isLocalTtsEndpoint(endpoint)) {
@@ -619,7 +1491,12 @@
       }
       if (!response || !response.ok) throw new Error("Local voices unavailable.");
       const data = await response.json();
-      const voices = Array.isArray(data.voices) ? data.voices : [];
+      const rawVoices = Array.isArray(data.voices) ? data.voices : [];
+      // Accept either a plain string id or an { id, name } object, since Kokoro-compatible
+      // servers are not consistent about which shape they return.
+      const voices = rawVoices
+        .map((voice) => (typeof voice === "string" ? voice : voice?.id))
+        .filter((voice) => typeof voice === "string" && voice);
       if (!voices.length) throw new Error("Local voices unavailable.");
       const preferred = voices.includes("af_heart") ? "af_heart" : voices[0];
       elements.voice.replaceChildren(...voices.map((voice) => {
@@ -641,21 +1518,11 @@
     }
   }
 
-  async function updateProviderFields() {
-    const isLocal = elements.ttsProvider.value === "local";
-    elements.localSettings.hidden = !isLocal;
-    // Pitch is not supported by Kokoro; hide it in local mode
-    if (elements.pitchField) elements.pitchField.hidden = isLocal;
-    // Voice help text only applies to browser voices
-    if (elements.voiceHelp) elements.voiceHelp.hidden = isLocal;
-    if (isLocal) {
-      await loadLocalVoices();
-      if (state.chunks.length && isLocalTtsEndpoint(elements.localEndpoint.value.trim())) {
-        prefetchLocalAudio(state.chunkIndex);
-        prefetchAhead(state.chunkIndex);
-      }
-    } else {
-      loadVoices();
+  async function initializeVoices() {
+    await loadLocalVoices();
+    if (state.chunks.length && isLocalTtsEndpoint(elements.localEndpoint.value.trim())) {
+      prefetchLocalAudio(state.chunkIndex);
+      prefetchAhead(state.chunkIndex);
     }
     updateButtons();
   }
@@ -670,56 +1537,277 @@
     return globalScope.pdfjsLib;
   }
 
+  function pageColumnLayout(blocks) {
+    return blocks.some((block) => block.column !== undefined) ? "two-column" : "single";
+  }
+
+  function buildPipelineOutput(pagesOfItems, pageWidth, pageHeight, policy) {
+    const resolvedPolicy = resolveSpeechPolicy(policy);
+    const displayPages = pagesOfItems.map((items) => items.map((item) => item.str).join(" "));
+    const displayText = normalizePdfText(displayPages.join("\n\n"));
+
+    const rawBlocksByPage = assignBlockIds(pagesOfItems.map((items, pageIndex) => {
+      const positioned = extractPositionedItems(items, pageIndex, pageWidth, pageHeight);
+      const lines = reconstructLines(positioned);
+      return splitParagraphBoundaries(reconstructBlocks(lines));
+    }));
+
+    const stats = analyzeDocumentStats(rawBlocksByPage);
+    const classifiedBlocksByPage = classifyBlocks(rawBlocksByPage, stats);
+    const columnedBlocksByPage = detectColumns(classifiedBlocksByPage);
+    const columnLayoutByPage = columnedBlocksByPage.map(pageColumnLayout);
+    const orderedBlocksByPage = resolveReadingOrder(columnedBlocksByPage, columnLayoutByPage);
+    const narrationText = renderNarrationText(orderedBlocksByPage, resolvedPolicy);
+    const document = buildDocumentAst(orderedBlocksByPage, resolvedPolicy);
+
+    return { displayText, narrationText, document };
+  }
+
+  // Watches for PDF.js's fake-worker console warning during `loadDocument`, without owning or
+  // altering `loadDocument`'s own resolution/rejection (FR-010) — `checkHasRealWorker`'s
+  // `probeRealWorker` path can't be reused here since it calls the probe and interprets its
+  // outcome together, and a real document load's own errors must propagate untouched (see the
+  // regression this avoided, recorded in tasks.md T022). The vendored PDF.js build only emits
+  // this warning once per page lifetime (a private static flag on PDFWorker suppresses repeats),
+  // so this has to observe the actual first load rather than a later, separate probe call.
+  async function loadDocumentWatchingForFakeWorker(loadDocument) {
+    const previousWarn = globalScope.console && globalScope.console.warn;
+    let sawFakeWorkerWarning = false;
+    if (globalScope.console) {
+      globalScope.console.warn = (...args) => {
+        if (String(args[0] || "").includes("Setting up fake worker")) {
+          sawFakeWorkerWarning = true;
+        }
+        if (typeof previousWarn === "function") previousWarn.apply(globalScope.console, args);
+      };
+    }
+    try {
+      const pdf = await loadDocument();
+      return { pdf, sawFakeWorkerWarning };
+    } finally {
+      if (globalScope.console) globalScope.console.warn = previousWarn;
+    }
+  }
+
   async function extractPdfText(file) {
     const pdfjsLib = await loadPdfEngine();
     const buffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-    const pages = [];
+
+    const { pdf, sawFakeWorkerWarning } = await loadDocumentWatchingForFakeWorker(
+      () => pdfjsLib.getDocument({ data: buffer }).promise,
+    );
+    const capabilities = await assessCapabilities(pdf.numPages);
+    if (sawFakeWorkerWarning) capabilities.hasRealWorker = false;
+
+    if (pdf.numPages > LARGE_DOCUMENT_PAGE_THRESHOLD && !capabilities.hasRealWorker) {
+      throw new Error(
+        "This document is too large to process reliably without a background worker in this browser.",
+      );
+    }
+
+    const pagesOfItems = [];
+    let pageWidth = 0;
+    let pageHeight = 0;
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
       const content = await page.getTextContent();
-      pages.push(content.items.map((item) => item.str).join(" "));
+      const viewport = typeof page.getViewport === "function" ? page.getViewport({ scale: 1 }) : null;
+      pageWidth = viewport?.width || pageWidth || 1;
+      pageHeight = viewport?.height || pageHeight || 1;
+      pagesOfItems.push(content.items);
       setStatus(`Reading page ${pageNumber} of ${pdf.numPages}...`);
     }
 
+    const { displayText, narrationText } = buildPipelineOutput(pagesOfItems, pageWidth, pageHeight);
+
     return {
       pageCount: pdf.numPages,
-      text: normalizePdfText(pages.join("\n\n")),
+      text: displayText,
+      narrationText,
     };
+  }
+
+  async function loadEpubEngine() {
+    if (!globalScope.fflate) {
+      await import("./epub-engine.js");
+    }
+    if (!globalScope.fflate) {
+      throw new Error("EPUB engine failed to load. Run the app from the local server and reload.");
+    }
+    return globalScope.fflate;
+  }
+
+  // OWASP A08:2025 Mishandling of Exceptional Conditions - bound zip bomb inputs
+  // so a crafted EPUB cannot exhaust memory during decompression.
+  const EPUB_MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024; // 200 MB
+  const EPUB_MAX_ENTRIES = 10000;
+
+  function decodeUtf8(bytes) {
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+
+  function resolveEpubPath(baseDir, href) {
+    const clean = String(href || "").split("#")[0];
+    const segments = [...baseDir.split("/"), ...clean.split("/")].filter((segment) => segment && segment !== ".");
+    const resolved = [];
+    for (const segment of segments) {
+      if (segment === "..") resolved.pop();
+      else resolved.push(segment);
+    }
+    return resolved.join("/");
+  }
+
+  function xhtmlToText(markup) {
+    const parser = new globalScope.DOMParser();
+    const doc = parser.parseFromString(markup, "application/xhtml+xml");
+    const body = doc.body || doc.documentElement;
+    if (!body) return "";
+    if (typeof body.querySelectorAll === "function") {
+      body.querySelectorAll("script, style").forEach((node) => node.remove());
+    }
+    return body.textContent || "";
+  }
+
+  async function extractEpubText(file) {
+    const fflate = await loadEpubEngine();
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+
+    let entries;
+    try {
+      entries = fflate.unzipSync(bytes);
+    } catch (_error) {
+      throw new Error("Could not read this EPUB. The file may be corrupt.");
+    }
+
+    const paths = Object.keys(entries);
+    if (paths.length > EPUB_MAX_ENTRIES) {
+      throw new Error("This EPUB has too many files to read safely.");
+    }
+    const totalBytes = paths.reduce((sum, path) => sum + entries[path].length, 0);
+    if (totalBytes > EPUB_MAX_UNCOMPRESSED_BYTES) {
+      throw new Error("This EPUB is too large to read safely.");
+    }
+
+    const containerXml = entries["META-INF/container.xml"];
+    if (!containerXml) {
+      throw new Error("Could not read this EPUB. Missing container.xml.");
+    }
+    const containerMatch = decodeUtf8(containerXml).match(/full-path="([^"]+)"/);
+    const opfPath = containerMatch && containerMatch[1];
+    const opfBytes = opfPath && entries[opfPath];
+    if (!opfBytes) {
+      throw new Error("Could not read this EPUB. Missing content manifest.");
+    }
+
+    const opfText = decodeUtf8(opfBytes);
+    const opfDir = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/")) : "";
+
+    const manifest = new Map();
+    const itemPattern = /<item\b[^>]*\bid="([^"]+)"[^>]*\bhref="([^"]+)"[^>]*\/?>|<item\b[^>]*\bhref="([^"]+)"[^>]*\bid="([^"]+)"[^>]*\/?>/g;
+    let itemMatch;
+    while ((itemMatch = itemPattern.exec(opfText))) {
+      const id = itemMatch[1] || itemMatch[4];
+      const href = itemMatch[2] || itemMatch[3];
+      manifest.set(id, href);
+    }
+
+    const spine = [];
+    const spinePattern = /<itemref\b[^>]*\bidref="([^"]+)"[^>]*\/?>/g;
+    let spineMatch;
+    while ((spineMatch = spinePattern.exec(opfText))) {
+      const href = manifest.get(spineMatch[1]);
+      if (href) spine.push(resolveEpubPath(opfDir, href));
+    }
+
+    if (!spine.length) {
+      throw new Error("Could not read this EPUB. No readable chapters listed.");
+    }
+
+    const chapters = [];
+    for (const path of spine) {
+      const chapterBytes = entries[path];
+      if (!chapterBytes) continue;
+      chapters.push(xhtmlToText(decodeUtf8(chapterBytes)));
+    }
+
+    return {
+      pageCount: chapters.length,
+      text: normalizePdfText(chapters.join("\n\n")),
+    };
+  }
+
+  function isEpubFile(file) {
+    return file.type === "application/epub+zip" || file.name.toLowerCase().endsWith(".epub");
+  }
+
+  function isPdfFile(file) {
+    return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
   }
 
   async function handleFile(file) {
     if (!file) return;
-    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+    if (!isPdfFile(file) && !isEpubFile(file)) {
       state.loadId += 1;
-      clearDocumentState("Choose a PDF file.");
+      clearDocumentState("Choose a PDF or EPUB file.");
       return;
     }
 
     const loadId = state.loadId + 1;
     state.loadId = loadId;
+    const isEpub = isEpubFile(file);
     stopReading();
-    setStatus("Loading PDF...");
+    setStatus(isEpub ? "Loading EPUB..." : "Loading PDF...");
     elements.fileName.textContent = file.name;
+    elements.documentControls.hidden = true;
     elements.play.disabled = true;
 
     try {
-      const result = await extractPdfText(file);
+      const result = isEpub ? await extractEpubText(file) : await extractPdfText(file);
       if (loadId !== state.loadId) return;
       state.text = result.text;
-      state.chunks = splitIntoSpeechChunks(result.text);
+      state.chunks = splitIntoSpeechChunks(result.narrationText || result.text);
+      state.paragraphChunkMap = null;
       state.chunkIndex = 0;
       state.highlightOffset = 0;
       state.localAudioCache.clear();
+      state.bookmarkKey = null;
+      state.hasBookmark = false;
 
-      renderPlaybackText();
+      if (state.chunks.length) {
+        const bookmarkKey = await bookmarkKeyForFile(file);
+        if (loadId !== state.loadId) return;
+        state.bookmarkKey = bookmarkKey;
+        const bookmark = readBookmark(bookmarkKey, state.chunks.length);
+        if (bookmark) {
+          state.chunkIndex = bookmark.index;
+          state.hasBookmark = true;
+        }
+      }
+
+      const noTextPaneMessage = isEpub
+        ? "No readable text found in this EPUB."
+        : "No readable text found. This PDF may be a scan. Try a text-based PDF or run OCR first.";
+      const noTextStatusMessage = isEpub
+        ? "No readable text found in this EPUB."
+        : "No readable text found. Try a text-based PDF or run OCR first.";
+      if (state.chunks.length) {
+        renderPlaybackText(state.hasBookmark ? state.chunkIndex : -1);
+      } else {
+        renderExtractedText(elements.textOutput, noTextPaneMessage);
+      }
+      elements.documentControls.hidden = !state.chunks.length;
       elements.pages.textContent = String(result.pageCount);
       elements.wordCount.textContent = String(result.text ? result.text.split(/\s+/).filter(Boolean).length : 0);
-      setStatus(state.chunks.length ? "Ready to read aloud." : "No readable text found.");
-      if (elements.ttsProvider.value === "local"
-        && state.chunks.length
-        && isLocalTtsEndpoint(elements.localEndpoint.value.trim())) {
+      setStatus(
+        state.chunks.length && state.hasBookmark
+          ? `Bookmark restored at passage ${state.chunkIndex + 1}. Press Play to continue.`
+          : state.chunks.length
+          ? "Ready. Press Play, or select a passage to start there."
+          : noTextStatusMessage,
+      );
+      if (state.chunks.length && isLocalTtsEndpoint(elements.localEndpoint.value.trim())) {
         prefetchLocalAudio(state.chunkIndex);
         prefetchAhead(state.chunkIndex);
       }
@@ -727,7 +1815,7 @@
       updateButtons();
     } catch (error) {
       if (loadId !== state.loadId) return;
-      clearDocumentState(error.message || "Could not read this PDF.");
+      clearDocumentState(error.message || (isEpub ? "Could not read this EPUB." : "Could not read this PDF."));
     }
   }
 
@@ -773,10 +1861,9 @@
       };
       state.audio.onerror = () => {
         if (playbackSession !== state.playbackId) return;
-        if (state.playbackActive && elements.ttsProvider.value === "local") {
+        if (state.playbackActive) {
           state.audio = null;
           state.isPaused = false;
-          state.visibilityPaused = false;
           setStatus("Reconnecting local TTS...");
           speakLocalChunk();
           return;
@@ -791,103 +1878,36 @@
     }
   }
 
-  function speakBrowserChunk() {
-    if (!state.speechSupported || typeof SpeechSynthesisUtterance !== "function") {
-      failPlayback("This browser does not support text-to-speech.");
-      return;
-    }
-
-    if (state.chunkIndex >= state.chunks.length) {
-      stopReading(false);
-      setStatus("Finished.");
-      elements.progress.value = 100;
-      return;
-    }
-
-    const utterance = new SpeechSynthesisUtterance(state.chunks[state.chunkIndex]);
-    utterance.voice = selectedVoice();
-    utterance.rate = Number(elements.rate.value);
-    utterance.pitch = Number(elements.pitch.value);
-    utterance.onend = () => {
-      state.chunkIndex += 1;
-      updateProgress();
-      speakBrowserChunk();
-    };
-    utterance.onerror = () => {
-      failPlayback("Speech playback stopped.");
-    };
-
-    state.utterance = utterance;
-    state.isPaused = false;
-    renderPlaybackText(state.chunkIndex);
-    setStatus(`Reading ${state.chunkIndex + 1} of ${state.chunks.length}...`);
-    updateButtons();
-    window.speechSynthesis.speak(utterance);
-  }
-
   async function playReading() {
     if (!state.chunks.length) return;
-    if (elements.ttsProvider.value === "local") {
-      stopSpeech();
-      state.playbackId += 1;
-      state.playbackActive = true;
-      await speakLocalChunk();
-      return;
-    }
-
-    if (!state.speechSupported) {
-      failPlayback("This browser does not support text-to-speech.");
-      return;
-    }
-
-    window.speechSynthesis.cancel();
-    speakBrowserChunk();
+    stopSpeech();
+    state.playbackId += 1;
+    state.playbackActive = true;
+    await speakLocalChunk();
   }
 
   function pauseReading() {
-    if (elements.ttsProvider.value === "local") {
-      if (!state.audio) return;
-      state.isPaused = true;
-      state.visibilityPaused = false;
-      state.audio.pause();
-      setStatus("Paused.");
-      updateButtons();
-      return;
-    }
-
-    if (!state.utterance || !state.speechSupported) return;
+    if (!state.audio) return;
     state.isPaused = true;
-    window.speechSynthesis.pause();
+    state.audio.pause();
     setStatus("Paused.");
     updateButtons();
   }
 
   function resumeReading() {
     if (!state.isPaused) return;
-    if (elements.ttsProvider.value === "local") {
-      state.isPaused = false;
-      state.visibilityPaused = false;
-      state.audio.play();
-      setStatus("Reading resumed.");
-      updateButtons();
-      return;
-    }
-
-    if (!state.speechSupported) return;
     state.isPaused = false;
-    window.speechSynthesis.resume();
+    state.audio.play();
     setStatus("Reading resumed.");
     updateButtons();
   }
 
   function stopReading(resetProgress = true) {
     stopSpeech();
-    state.utterance = null;
     state.audio = null;
     state.isPaused = false;
     state.playbackActive = false;
     state.playbackId += 1;
-    state.visibilityPaused = false;
     if (resetProgress) state.chunkIndex = 0;
     state.highlightOffset = 0;
     state.localAudioCache.clear();
@@ -901,20 +1921,17 @@
   elements.play.addEventListener("click", playReading);
   elements.pause.addEventListener("click", pauseReading);
   elements.resume.addEventListener("click", resumeReading);
-  elements.ttsProvider.addEventListener("change", updateProviderFields);
   elements.localEndpoint.addEventListener("change", () => {
-    if (elements.ttsProvider.value === "local") loadLocalVoices();
+    loadLocalVoices();
   });
   elements.stop.addEventListener("click", () => {
     stopReading();
     setStatus(state.chunks.length ? "Stopped." : "Choose a PDF to begin.");
   });
+  if (elements.bookmark) elements.bookmark.addEventListener("click", toggleBookmark);
 
   elements.rate.addEventListener("input", () => {
     elements.rateValue.textContent = `${Number(elements.rate.value).toFixed(1)}x`;
-  });
-  elements.pitch.addEventListener("input", () => {
-    elements.pitchValue.textContent = Number(elements.pitch.value).toFixed(1);
   });
 
   elements.dropZone.addEventListener("dragover", (event) => {
@@ -942,55 +1959,13 @@
     state.highlightOffset = 0;
     updateProgress();
 
-    if (elements.ttsProvider.value === "local") {
-      stopSpeech();
-      state.playbackId += 1;
-      state.playbackActive = true;
-      state.isPaused = false;
-      state.visibilityPaused = false;
-      speakLocalChunk();
-      return;
-    }
-
-    if (state.speechSupported) {
-      window.speechSynthesis.cancel();
-      speakBrowserChunk();
-      return;
-    }
-
-    renderPlaybackText(index);
-    setStatus(`Selected ${index + 1} of ${state.chunks.length}.`);
+    stopSpeech();
+    state.playbackId += 1;
+    state.playbackActive = true;
+    state.isPaused = false;
+    speakLocalChunk();
   });
 
-  if ("speechSynthesis" in window) {
-    state.speechSupported = true;
-    loadVoices();
-    window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
-  } else {
-    state.speechSupported = false;
-    elements.voice.disabled = true;
-    setStatus("This browser does not support text-to-speech.");
-  }
-
-  if (typeof document.addEventListener === "function") {
-    document.addEventListener("visibilitychange", () => {
-      if (elements.ttsProvider.value !== "local") return;
-      if (typeof document.visibilityState === "string" && document.visibilityState === "hidden") {
-        if (state.audio && !state.audio.paused) {
-          state.visibilityPaused = true;
-          state.audio.pause();
-          state.isPaused = true;
-          setStatus("Paused.");
-          updateButtons();
-        }
-        return;
-      }
-      if (state.visibilityPaused) {
-        resumeLocalPlayback();
-      }
-    });
-  }
-
-  updateProviderFields();
+  initializeVoices();
   updateButtons();
 })(typeof window !== "undefined" ? window : globalThis);
