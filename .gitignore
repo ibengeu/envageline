@@ -26,5 +26,9 @@ node_modules/
 # Kokoro model files (large, downloaded at runtime)
 pdf-reader/kokoro-server/models/
 
+# Project docs / design artifacts (internal only)
+docs/
+design-artifacts/
+
 # Docker
 *.override.yml

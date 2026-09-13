@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self'; object-src 'none'; base-uri 'none'; connect-src 'self' http://localhost:* http://127.0.0.1:*; media-src 'self' blob: http://localhost:* http://127.0.0.1:*"
@@ -10,99 +10,111 @@
     <title>PDF Read Aloud</title>
     <link rel="stylesheet" href="./styles.css">
     <script defer src="./pdf-engine.js" type="module"></script>
+    <script defer src="./epub-engine.js" type="module"></script>
     <script defer src="./app.js" type="module"></script>
   </head>
   <body>
-    <main class="app-shell" aria-labelledby="app-title">
-      <section class="control-shell reveal">
-        <div class="control-core">
-          <div class="intro">
-            <h1 id="app-title">PDF Read Aloud</h1>
-            <p class="lede">Open a local PDF, inspect the extracted text, then listen with browser voices.</p>
-          </div>
-
-          <label class="drop-zone" id="dropZone" for="fileInput">
-            <span class="drop-title">Choose PDF</span>
-            <span class="drop-copy">Select a text-based PDF or drop one here.</span>
-            <input id="fileInput" type="file" accept="application/pdf,.pdf">
-          </label>
-
-          <dl class="stats" aria-label="Document details">
-            <div>
-              <dt>File</dt>
-              <dd id="fileName">No file selected</dd>
-            </div>
-            <div>
-              <dt>Pages</dt>
-              <dd id="pages">0</dd>
-            </div>
-            <div>
-              <dt>Words</dt>
-              <dd id="wordCount">0</dd>
-            </div>
-          </dl>
-
-          <div class="field">
-            <label for="ttsProvider">TTS Provider</label>
-            <select id="ttsProvider">
-              <option value="browser">Browser voices</option>
-              <option value="local">Local Kokoro</option>
-            </select>
-            <p>Local mode sends text only to a localhost TTS server.</p>
-          </div>
-
-          <div class="local-settings" id="localSettings" hidden>
-            <div class="field">
-              <label for="localEndpoint">Local endpoint</label>
-              <input id="localEndpoint" type="url" value="/v1/audio/speech" autocomplete="off" spellcheck="false">
-            </div>
-          </div>
-
-          <div class="field" id="voiceField">
-            <label for="voice">Voice</label>
-            <select id="voice" aria-describedby="voiceHelp"></select>
-            <p id="voiceHelp">Enhanced system voices appear here when your browser exposes them.</p>
-          </div>
-
-          <div class="range-grid" id="rateAndPitch">
-            <div class="field">
-              <label for="rate">Rate <span id="rateValue">1.0x</span></label>
-              <input id="rate" type="range" min="0.6" max="1.5" value="1" step="0.1">
-            </div>
-            <div class="field" id="pitchField">
-              <label for="pitch">Pitch <span id="pitchValue">1.0</span></label>
-              <input id="pitch" type="range" min="0.7" max="1.3" value="1" step="0.1">
-            </div>
-          </div>
-
-          <div class="transport" aria-label="Playback controls">
-            <button id="play" class="primary-action" type="button" disabled>Play</button>
-            <button id="pause" type="button" disabled hidden>Pause</button>
-            <button id="resume" type="button" disabled hidden>Resume</button>
-            <button id="stop" type="button" disabled>Stop</button>
-          </div>
-
-          <div class="status-line" role="status" aria-live="polite">
-            <div class="status-row">
-              <span class="status-dot" id="statusDot" aria-hidden="true"></span>
-              <span id="status">Choose a PDF to begin.</span>
-            </div>
-            <progress id="progress" value="0" max="100">0%</progress>
-          </div>
+    <div class="app-frame">
+      <aside class="rail" aria-hidden="true">
+        <div class="rail-mark">
+          <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M8 6h11.5C23.6 6 27 9.4 27 13.5c0 3.66-2.65 6.7-6.13 7.32L27 27h-5.2l-6.1-6.9v6.9H11V6h-3z" fill="currentColor"/>
+            <path d="M8 6v21h4.2V6H8z" fill="currentColor"/>
+          </svg>
         </div>
-      </section>
+        <div class="rail-pulse" id="railPulse"></div>
+      </aside>
 
-      <section class="reader-shell reveal" aria-labelledby="text-title">
-        <div class="reader-core">
-          <div class="reader-header">
-            <div>
-              <h2 id="text-title">Reading Pane</h2>
+      <main class="app-shell" aria-labelledby="app-title">
+        <section class="control-shell reveal">
+          <div class="control-core">
+            <div class="intro">
+              <p class="eyebrow">Local &amp; private</p>
+              <h1 id="app-title">Read Aloud</h1>
+              <p class="lede">Open a local PDF or EPUB, then read or listen from any passage.</p>
             </div>
-            <p>Text stays on this device and is displayed as literal content.</p>
+
+            <label class="drop-zone" id="dropZone" for="fileInput">
+              <span class="drop-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 15V4M12 4l-4 4M12 4l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="drop-title">Choose PDF or EPUB</span>
+              <span class="drop-copy">Select a text-based file or drop one here. Scanned PDFs need OCR first.</span>
+              <input id="fileInput" type="file" accept="application/pdf,.pdf,application/epub+zip,.epub">
+            </label>
+
+            <div class="document-controls" id="documentControls" hidden>
+              <dl class="stats" aria-label="Document details">
+                <div>
+                  <dt>File</dt>
+                  <dd id="fileName">No file selected</dd>
+                </div>
+                <div>
+                  <dt>Pages</dt>
+                  <dd id="pages">0</dd>
+                </div>
+                <div>
+                  <dt>Words</dt>
+                  <dd id="wordCount">0</dd>
+                </div>
+              </dl>
+
+              <details class="audio-settings">
+                <summary>Reading settings</summary>
+                <div class="audio-settings-content">
+                  <div class="field">
+                    <label for="localEndpoint">Local endpoint</label>
+                    <input id="localEndpoint" type="url" value="/v1/audio/speech" autocomplete="off" spellcheck="false">
+                    <p>Text is sent only to this localhost TTS server.</p>
+                  </div>
+
+                  <div class="field" id="voiceField">
+                    <label for="voice">Voice</label>
+                    <select id="voice"></select>
+                  </div>
+
+                  <div class="range-grid" id="rateAndPitch">
+                    <div class="field">
+                      <label for="rate">Rate <span id="rateValue">1.0x</span></label>
+                      <input id="rate" type="range" min="0.6" max="1.5" value="1" step="0.1">
+                    </div>
+                  </div>
+                </div>
+              </details>
+
+              <div class="transport" aria-label="Playback controls">
+                <button id="play" class="primary-action" type="button" disabled>Play</button>
+                <button id="pause" type="button" disabled hidden>Pause</button>
+                <button id="resume" type="button" disabled hidden>Resume</button>
+                <button id="stop" type="button" disabled>Stop</button>
+                <button id="bookmark" class="bookmark-action" type="button" aria-pressed="false" disabled>Bookmark passage 1</button>
+              </div>
+            </div>
+
+            <div class="status-line" role="status" aria-live="polite">
+              <div class="status-row">
+                <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+                <span id="status">Choose a PDF to begin.</span>
+              </div>
+              <progress id="progress" value="0" max="100">0%</progress>
+            </div>
           </div>
-          <pre id="textOutput" class="text-output">Choose a PDF to preview extracted text.</pre>
-        </div>
-      </section>
-    </main>
+        </section>
+
+        <section class="reader-shell reveal" aria-labelledby="text-title">
+          <div class="reader-core">
+            <div class="reader-header">
+              <div>
+                <h2 id="text-title">Reading Pane</h2>
+              </div>
+            </div>
+            <pre id="textOutput" class="text-output">Choose a PDF to preview extracted text.</pre>
+          </div>
+        </section>
+      </main>
+    </div>
   </body>
 </html>
