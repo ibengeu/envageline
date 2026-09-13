@@ -22,6 +22,12 @@ MODEL_DIR = Path(os.getenv("KOKORO_MODEL_DIR", "/models"))
 MODEL_PATH = MODEL_DIR / "kokoro-v1.0.onnx"
 VOICES_PATH = MODEL_DIR / "voices-v1.0.bin"
 DEFAULT_VOICE = os.getenv("KOKORO_DEFAULT_VOICE", "af_heart")
+# Serving the reader's static files is optional: in the container it is baked in at
+# /app/pdf-reader, but running this server directly on a workstation (no Docker) has no such
+# path, and mounting a missing directory raises at import time. Overridable like
+# KOKORO_MODEL_DIR, and skipped entirely when the directory is absent, so `docker compose up`
+# behaves exactly as before while a local `uvicorn server:app` still starts.
+READER_DIR = Path(os.getenv("KOKORO_READER_DIR", "/app/pdf-reader"))
 
 app = FastAPI(title="Local Kokoro TTS", version="1.0")
 app.add_middleware(
@@ -43,10 +49,20 @@ app.add_middleware(
 _kokoro: Kokoro | None = None
 
 
+# "opus" is opt-in and never the default. Measured on loopback, transferring a WAV chunk takes
+# ~0.2ms against a ~4s synthesis, so the format buys no playback latency; Opus is ~11x smaller
+# (13KB vs 144KB for 3s) but costs ~120ms to encode. It exists purely so the browser's 150MB
+# IndexedDB audio cache can hold far more of a book, not to reduce buffering.
+AUDIO_FORMATS = {
+    "wav": ("WAV", "PCM_16", "audio/wav"),
+    "opus": ("OGG", "OPUS", "audio/ogg"),
+}
+
+
 class SpeechRequest(BaseModel):
     input: str = Field(min_length=1, max_length=6000)
     voice: str = DEFAULT_VOICE
-    response_format: Literal["wav"] = "wav"
+    response_format: Literal["wav", "opus"] = "wav"
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     lang: str = "en-us"
 
@@ -69,6 +85,20 @@ def get_kokoro() -> Kokoro:
         download_if_missing(VOICES_URL, VOICES_PATH)
         _kokoro = Kokoro(str(MODEL_PATH), str(VOICES_PATH))
     return _kokoro
+
+
+@app.on_event("startup")
+def warm_up() -> None:
+    # The first synthesis of the process pays ONNX graph initialisation on top of its own cost
+    # (measured 2.00s cold vs 1.73s warm), which would otherwise land on the reader's very first
+    # chunk - the one moment the listener is actually waiting. Priming here moves that cost to
+    # server start. Failure is non-fatal: the model loads lazily on first request as before, so
+    # a warm-up problem must not prevent the server from serving.
+    try:
+        get_kokoro().create("Ready.", voice=DEFAULT_VOICE)
+        print("Warm-up complete.")
+    except Exception as error:  # noqa: BLE001 - startup must degrade, never abort
+        print(f"Warm-up skipped: {error}")
 
 
 @app.get("/health")
@@ -97,9 +127,11 @@ def speech(request: SpeechRequest) -> Response:
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
 
+    container, subtype, media_type = AUDIO_FORMATS[request.response_format]
     output = BytesIO()
-    sf.write(output, audio, sample_rate, format="WAV")
-    return Response(content=output.getvalue(), media_type="audio/wav")
+    sf.write(output, audio, sample_rate, format=container, subtype=subtype)
+    return Response(content=output.getvalue(), media_type=media_type)
 
 
-app.mount("/", StaticFiles(directory="/app/pdf-reader", html=True), name="reader")
+if READER_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(READER_DIR), html=True), name="reader")

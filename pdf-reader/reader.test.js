@@ -6,6 +6,8 @@ const { join } = require("node:path");
 const {
   normalizePdfText,
   splitIntoSpeechChunks,
+  mergeShortChunks,
+  prefetchDepth,
   renderExtractedText,
   renderSpeechFocus,
   extractPositionedItems,
@@ -2779,7 +2781,7 @@ test("bookmarking the selected passage saves only a local resume position", asyn
     removeItem(key) { this.values.delete(key); },
   };
   const app = loadBrowserApp({
-    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    pdfLoader: () => Promise.resolve(createPdf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first passage ends here. BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second passage ends here.")),
     localStorage: storage,
   });
   try {
@@ -2797,7 +2799,7 @@ test("bookmarking the selected passage saves only a local resume position", asyn
     assert.equal(app.elements.bookmark.getAttribute("aria-pressed"), "true");
     assert.equal(storage.values.size, 1);
     const [key, value] = storage.values.entries().next().value;
-    assert.match(key, /^pdf-reader-bookmark:v1:/);
+    assert.match(key, /^pdf-reader-bookmark:v2:/);
     assert.deepEqual(Object.keys(JSON.parse(value)).sort(), ["index", "savedAt", "version"]);
     assert.deepEqual(JSON.parse(value).index, 1);
     assert.doesNotMatch(key + value, /private\.pdf|First passage|Second passage|unique-pdf-bytes/);
@@ -2903,7 +2905,7 @@ test("the offset applies only once — the next chunk starts at time zero (spec 
   };
   const first = loadBrowserApp({
     speech: false,
-    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    pdfLoader: () => Promise.resolve(createPdf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first passage ends here. BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second passage ends here.")),
     localStorage: storage,
     fetchImpl,
   });
@@ -2920,7 +2922,7 @@ test("the offset applies only once — the next chunk starts at time zero (spec 
 
   const reopened = loadBrowserApp({
     speech: false,
-    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    pdfLoader: () => Promise.resolve(createPdf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first passage ends here. BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second passage ends here.")),
     localStorage: storage,
     fetchImpl,
   });
@@ -2954,7 +2956,7 @@ test("reopening the same PDF restores its bookmark without starting audio", asyn
   const file = createFile("private.pdf", "application/pdf", "same-private-bytes");
   file.arrayBuffer = async () => new TextEncoder().encode("same-private-bytes").buffer;
   const first = loadBrowserApp({
-    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    pdfLoader: () => Promise.resolve(createPdf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first passage ends here. BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second passage ends here.")),
     localStorage: storage,
   });
   try {
@@ -2968,7 +2970,7 @@ test("reopening the same PDF restores its bookmark without starting audio", asyn
   }
 
   const reopened = loadBrowserApp({
-    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    pdfLoader: () => Promise.resolve(createPdf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first passage ends here. BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second passage ends here.")),
     localStorage: storage,
   });
   try {
@@ -3058,7 +3060,7 @@ test("a pre-009-shaped bookmark (no offsetSeconds field) still resumes at chunk-
   const file = createFile("private.pdf", "application/pdf", "pre009-bytes");
   file.arrayBuffer = async () => new TextEncoder().encode("pre009-bytes").buffer;
   const first = loadBrowserApp({
-    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    pdfLoader: () => Promise.resolve(createPdf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first passage ends here. BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second passage ends here.")),
     localStorage: storage,
   });
   try {
@@ -3071,13 +3073,13 @@ test("a pre-009-shaped bookmark (no offsetSeconds field) still resumes at chunk-
     // Overwrite with the exact pre-009 shape — no offsetSeconds field — regardless of what this
     // session's own saveBookmark just wrote, to prove reading an old record works independent of
     // whether saving has changed.
-    storage.values.set(key, JSON.stringify({ version: 1, index: 1, savedAt: Date.now() }));
+    storage.values.set(key, JSON.stringify({ version: 2, index: 1, savedAt: Date.now() }));
   } finally {
     first.restore();
   }
 
   const reopened = loadBrowserApp({
-    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    pdfLoader: () => Promise.resolve(createPdf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first passage ends here. BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB second passage ends here.")),
     localStorage: storage,
   });
   try {
@@ -3107,7 +3109,7 @@ test("a bookmark with a malformed offsetSeconds still resumes successfully (spec
     await first.trigger("fileInput", "change", { target: { files: [file] } });
     await first.trigger("bookmark", "click");
     const [key] = storage.values.keys();
-    storage.values.set(key, JSON.stringify({ version: 1, index: 0, savedAt: Date.now(), offsetSeconds: -5 }));
+    storage.values.set(key, JSON.stringify({ version: 2, index: 0, savedAt: Date.now(), offsetSeconds: -5 }));
   } finally {
     first.restore();
   }
@@ -3143,7 +3145,7 @@ test("corrupt or out-of-range bookmark data is discarded without blocking readin
     await first.trigger("fileInput", "change", { target: { files: [file] } });
     await first.trigger("bookmark", "click");
     const [key] = storage.values.keys();
-    storage.values.set(key, JSON.stringify({ version: 1, index: 99, savedAt: Date.now() }));
+    storage.values.set(key, JSON.stringify({ version: 2, index: 99, savedAt: Date.now() }));
   } finally {
     first.restore();
   }
@@ -3326,7 +3328,11 @@ test("local Kokoro provider plays extracted text", async () => {
     assert.deepEqual(JSON.parse(speechCalls[0].options.body), {
       input: "Loaded text.",
       voice: "af_heart",
-      response_format: "wav",
+      // Reflects the app's configured AUDIO_FORMAT. This test pins the SHAPE of the playback
+      // path's synthesis request (text, voice, speed); the format contract itself is covered
+      // independently by the KokoroTtsEngine tests, which assert both an explicit format and
+      // the wav default.
+      response_format: "opus",
       speed: 1,
     });
     assert.equal(app.window.lastAudio.src, "blob:audio-1");
@@ -4020,4 +4026,176 @@ test("reader layout keeps long PDF text inside a viewport-constrained scroll reg
   assert.match(css, /\.text-output\s*{[^}]*flex:\s*1;/s);
   assert.match(css, /\.text-output\s*{[^}]*min-height:\s*0;/s);
   assert.match(css, /\.text-output\s*{[^}]*overflow:\s*auto;/s);
+});
+
+// Regression for the UI freeze reported on a 303-page book (574 KB of extracted text): the
+// per-page extraction loop completed ("Reading page 303 of 303...") and the tab then went
+// unresponsive inside splitIntoSpeechChunks. Measured cost was quadratic in total text length
+// (10.8KB/131ms, 21.7KB/1029ms, 43.4KB/8180ms, 86.8KB/64110ms - ~4x per doubling), because
+// every boundary position re-scanned the whole string through isProtectedPosition.
+//
+// OWASP A08:2025 Mishandling of Exceptional Conditions - a realistic document must chunk in
+// bounded time rather than hanging the main thread. This asserts the observable outcome
+// (completes within a budget) on book-scale input, not any particular internal strategy.
+test("splitIntoSpeechChunks chunks a book-scale document in bounded time (UI freeze regression)", () => {
+  const paragraph = "The executive who wants to win must understand that preparation beats "
+    + "talent when talent is unprepared. Mr. Smith paid $1,250.75 in 1987, roughly 12.5% of "
+    + "the total, which was the 3rd largest sum e.g. that quarter.";
+  // ~100 KB, still well under the 574 KB book that triggered the freeze.
+  const text = Array.from({ length: 400 }, () => paragraph).join("\n\n");
+
+  const start = Date.now();
+  const chunks = splitIntoSpeechChunks(text, 260);
+  const elapsedMs = Date.now() - start;
+
+  assert.ok(chunks.length > 0, "expected a book-scale document to produce chunks");
+  assert.ok(elapsedMs < 2000, `expected under 2000ms, took ${elapsedMs}ms`);
+});
+
+// Second half of the UI-freeze regression: click-to-jump paragraph mapping compared every
+// paragraph against every chunk (O(paragraphs x chunks) set intersections). Sized to the real
+// 303-page book that triggered the report (564 KB of text -> 1206 paragraphs, 7388 chunks),
+// since that is the largest input this path realistically sees. Unlike chunking, this runs only
+// when the clickable-passages view is enabled, is cached in state.paragraphChunkMap, and is off
+// the document-load path - so the budget here guards a one-time interaction hitch, not the
+// load freeze. Asserts the observable outcome only.
+test("mapParagraphsToChunks maps a book-scale document in bounded time (UI freeze regression)", () => {
+  const paragraphCount = 1206;
+  const chunkCount = 7388;
+  const paragraphs = Array.from({ length: paragraphCount }, (_, i) =>
+    `Paragraph ${i} about executives negotiating contracts and winning deals in business.`);
+  const chunks = Array.from({ length: chunkCount }, (_, i) =>
+    `Paragraph ${i} about executives negotiating contracts.`);
+
+  const start = Date.now();
+  const mapped = mapParagraphsToChunks(paragraphs, chunks);
+  const elapsedMs = Date.now() - start;
+
+  assert.equal(mapped.length, paragraphCount);
+  assert.ok(elapsedMs < 1500, `expected under 1500ms, took ${elapsedMs}ms`);
+});
+// --- Buffering improvements (measured against the local Kokoro server) ---
+//
+// Measured synthesis cost is ~1.55s fixed per call plus ~0.0143s/char, so chunk size dominates
+// throughput: 40-char chunks synthesise at ~1.1x realtime (playback nearly starves) while
+// 260-char chunks reach ~3.2x. The book's narration splits into 7388 chunks averaging 75 chars
+// with 30% under 40 chars, because the tier splitter always splits at sentence boundaries and
+// never merges. mergeShortChunks packs those already-split chunks back up to a target.
+
+test("mergeShortChunks packs adjacent short chunks up to the target length", () => {
+  const merged = mergeShortChunks(["One.", "Two.", "Three."], 40);
+
+  assert.deepEqual(merged, ["One. Two. Three."]);
+});
+
+test("mergeShortChunks never produces a chunk longer than the target", () => {
+  const chunks = Array.from({ length: 50 }, (_, i) => `Sentence number ${i} here.`);
+
+  const merged = mergeShortChunks(chunks, 100);
+
+  assert.ok(merged.length > 0);
+  merged.forEach((chunk) => {
+    assert.ok(chunk.length <= 100, `chunk of ${chunk.length} exceeded target 100: ${chunk}`);
+  });
+});
+
+// A chunk already at or over the target is passed through untouched rather than dropped or
+// split further - splitting here would risk cutting a protected span the tier splitter kept
+// whole (OWASP A08: the merge step must never create a malformed utterance).
+test("mergeShortChunks preserves a chunk that already exceeds the target", () => {
+  const long = "x".repeat(120);
+
+  const merged = mergeShortChunks([long, "Tail."], 100);
+
+  assert.ok(merged.includes(long));
+  assert.equal(merged.join(" ").includes("Tail."), true);
+});
+
+test("mergeShortChunks loses no text", () => {
+  const chunks = ["Dr. Smith paid four hundred dollars.", "He was the 21st to do so.", "Then he left."];
+
+  const merged = mergeShortChunks(chunks, 200);
+
+  assert.equal(merged.join(" "), chunks.join(" "));
+});
+
+// The EWMA prefetch depth divided by a hardcoded CHUNK_PLAY_MS = 2500, but real chunks yield
+// roughly 9s of audio, so lookahead systematically under-prefetched. Exposed as a pure function
+// so the observable contract (a faster server or longer chunks buys more lookahead) is testable.
+test("prefetchDepth grows when synthesis is fast relative to chunk playback", () => {
+  const slow = prefetchDepth({ estimatedSynthesisMs: 4000, chunkPlaybackMs: 9000 });
+  const fast = prefetchDepth({ estimatedSynthesisMs: 1000, chunkPlaybackMs: 9000 });
+
+  assert.ok(fast > slow, `expected deeper lookahead when synthesis is faster (${fast} vs ${slow})`);
+});
+
+test("prefetchDepth always prefetches at least one chunk ahead and stays bounded", () => {
+  const starved = prefetchDepth({ estimatedSynthesisMs: 999999, chunkPlaybackMs: 9000 });
+  const unbounded = prefetchDepth({ estimatedSynthesisMs: 1, chunkPlaybackMs: 9000 });
+
+  assert.equal(starved, 1);
+  assert.ok(unbounded <= 6, `expected a bounded lookahead, got ${unbounded}`);
+});
+
+// Merging made steady-state playback much faster (3.44x -> 5.49x realtime on the real book) but
+// regressed the one moment the listener actually waits: the FIRST chunk grew from 75 to 205
+// characters, pushing time-to-first-audio from 2.2s to 4.2s. Leaving the opening chunk unmerged
+// recovers that 2.2s start while keeping the full steady-state gain (measured: same 5.49x, same
+// 204min total, one extra chunk), so it is strictly better than merging everything.
+test("mergeShortChunks can leave the opening chunk unmerged so audio starts sooner", () => {
+  const chunks = ["Short opener.", "Next one.", "And another.", "One more here."];
+
+  const merged = mergeShortChunks(chunks, 260, { keepFirstChunkShort: true });
+
+  assert.equal(merged[0], "Short opener.");
+  assert.ok(merged.length >= 2, "the remaining chunks should still be merged together");
+  assert.equal(merged.join(" "), chunks.join(" "), "no text may be lost");
+});
+
+test("mergeShortChunks merges the opening chunk by default", () => {
+  const chunks = ["Short opener.", "Next one."];
+
+  assert.deepEqual(mergeShortChunks(chunks, 260), ["Short opener. Next one."]);
+});
+
+// Opus output: ~10.5x smaller than WAV at real chunk size (43,250 vs 453,676 bytes measured),
+// which is what lets the 150MB IndexedDB cache hold a whole book (3,636 chunks vs 346) rather
+// than a fraction of one. It buys no playback latency - loopback transfer is ~0.2ms against a
+// multi-second synthesis - so the format is a caching decision, not a buffering one.
+test("KokoroTtsEngine.synthesize requests the audio format it is given", async () => {
+  const originalFetch = global.fetch;
+  const bodies = [];
+  global.fetch = async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return { ok: true, blob: async () => new Blob() };
+  };
+
+  try {
+    const engine = createKokoroTtsEngine();
+    await engine.synthesize("hello", {
+      endpoint: "/v1/audio/speech", voice: "af_heart", speed: 1, format: "opus",
+    });
+
+    assert.equal(bodies[0].response_format, "opus");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("KokoroTtsEngine.synthesize still requests wav when no format is given", async () => {
+  const originalFetch = global.fetch;
+  const bodies = [];
+  global.fetch = async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return { ok: true, blob: async () => new Blob() };
+  };
+
+  try {
+    const engine = createKokoroTtsEngine();
+    await engine.synthesize("hello", { endpoint: "/v1/audio/speech", voice: "af_heart", speed: 1 });
+
+    assert.equal(bodies[0].response_format, "wav");
+  } finally {
+    global.fetch = originalFetch;
+  }
 });

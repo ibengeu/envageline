@@ -1056,6 +1056,135 @@
     return false;
   }
 
+  // --- Protected-span index (UI-freeze fix) ---
+  //
+  // The per-position predicates above each rescan the WHOLE string from offset 0, so asking
+  // them about every boundary/word made chunking quadratic in document length: a 303-page book
+  // (574 KB of text) hung the tab for tens of minutes after extraction finished. Measured:
+  // 10.8KB/131ms, 21.7KB/1029ms, 43.4KB/8180ms, 86.8KB/64110ms — ~4x per doubling.
+  //
+  // Instead, collect every protected span ONCE per string into a sorted, merged interval array
+  // (O(n log n)), then answer each position query by binary search (O(log n)). The predicates
+  // themselves are kept intact and still exported — they remain the readable specification of
+  // what each rule protects, and the spans below are derived from those same patterns, so the
+  // protected ranges are identical to what the per-position predicates report.
+  function collectMatchRanges(text, pattern, toRange) {
+    const regex = new RegExp(pattern.source, pattern.flags);
+    const ranges = [];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const range = toRange(match);
+      if (range) ranges.push(range);
+      if (match[0] === "") regex.lastIndex += 1;
+    }
+    return ranges;
+  }
+
+  // Mirrors isProtectedAbbreviationPeriod: a position is protected when the text ending there
+  // ends with a known abbreviation. That position is `start + abbreviation.length`, and the
+  // predicate's check is an equality on the slice end, so the protected range is the single
+  // position at the end of each abbreviation occurrence.
+  function abbreviationRanges(text) {
+    const ranges = [];
+    PROTECTED_ABBREVIATIONS.forEach((abbreviation) => {
+      let from = text.indexOf(abbreviation);
+      while (from !== -1) {
+        const end = from + abbreviation.length;
+        ranges.push({ start: end - 1, end: end + 1 });
+        from = text.indexOf(abbreviation, from + 1);
+      }
+    });
+    return ranges;
+  }
+
+  // Mirrors isProtectedCurrencyPhrase: each currency unit noun extends its protected range back
+  // over an immediately-preceding number-word run. The original did a nested full scan per unit
+  // noun; here the number-word runs are collected once and matched by adjacency.
+  function currencyPhraseRanges(text) {
+    const numberRuns = collectMatchRanges(text, NUMBER_WORD_RUN_PATTERN, (match) => ({
+      start: match.index,
+      end: match.index + match[0].length,
+    }));
+    return collectMatchRanges(text, CURRENCY_UNIT_NOUN_PATTERN, (match) => {
+      let rangeStart = match.index;
+      numberRuns.forEach((run) => {
+        if (run.end > match.index) return;
+        if (/^\s*$/.test(text.slice(run.end, match.index))) {
+          rangeStart = Math.min(rangeStart, run.start);
+        }
+      });
+      return { start: rangeStart, end: match.index + match[0].length };
+    });
+  }
+
+  // Exact equivalent of `text.slice(0, index).match(/[A-Za-z]+-$/)`: that pattern matches only
+  // when index is immediately preceded by a hyphen, which is itself preceded by one or more
+  // ASCII letters. Walks backward over that bounded run instead of materializing the whole
+  // prefix, so cost is proportional to the run, not to the document.
+  function ordinalRunStart(text, index) {
+    if (index < 2 || text[index - 1] !== "-") return index;
+    let start = index - 1;
+    while (start > 0 && /[A-Za-z]/.test(text[start - 1])) start -= 1;
+    return start === index - 1 ? index : start;
+  }
+
+  function protectedSpansFor(text) {
+    const spans = [
+      ...abbreviationRanges(text),
+      ...collectMatchRanges(text, RAW_DECIMAL_PATTERN, (match) => ({
+        start: match.index, end: match.index + match[0].length,
+      })),
+      ...collectMatchRanges(text, NUMBER_WORD_RUN_PATTERN, (match) => (
+        /\bpoint\b/i.test(match[0])
+          ? { start: match.index, end: match.index + match[0].length }
+          : null
+      )),
+      ...currencyPhraseRanges(text),
+      ...collectMatchRanges(text, ORDINAL_WORD_ENDING_PATTERN, (match) => ({
+        // Scans backward over the immediately-preceding hyphenated word run instead of slicing
+        // and re-matching the whole document prefix per match (`text.slice(0, match.index)`),
+        // which was quadratic: 2670 matches x a ~287KB average prefix cost 6.9s on a 574KB
+        // book, 99.95% of all protected-span time. Equivalent to the /[A-Za-z]+-$/ prefix
+        // match, since that pattern can only ever match a bounded run ending at match.index.
+        start: ordinalRunStart(text, match.index),
+        end: match.index + match[0].length,
+      })),
+      ...collectMatchRanges(text, YEAR_WORD_PHRASE_PATTERN, (match) => ({
+        start: match.index, end: match.index + match[0].length,
+      })),
+    ];
+
+    spans.sort((a, b) => a.start - b.start || a.end - b.end);
+
+    const merged = [];
+    spans.forEach((span) => {
+      const last = merged[merged.length - 1];
+      if (last && span.start <= last.end) {
+        last.end = Math.max(last.end, span.end);
+        return;
+      }
+      merged.push({ start: span.start, end: span.end });
+    });
+    return merged;
+  }
+
+  // Every protected range above is exclusive at both ends (the predicates all test
+  // `position > start && position < end`), so a position is protected when it falls strictly
+  // inside a merged span.
+  function isPositionInSpans(spans, position) {
+    let low = 0;
+    let high = spans.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      const span = spans[mid];
+      if (position <= span.start) high = mid - 1;
+      else if (position >= span.end) low = mid + 1;
+      else return true;
+    }
+    return false;
+  }
+  // --- end protected-span index ---
+
   // Single dispatch point for all protected-span detectors (research.md Decision 2).
   function isProtectedPosition(text, position) {
     return (
@@ -1078,7 +1207,12 @@
     plain: /[:\-–—]\s+(?=\S)/g,
   };
 
-  function findBoundaryCandidates(text, tier) {
+  // `spans` is the precomputed protected-span index for `text` (see protectedSpansFor); it is
+  // threaded in so a single index is reused across every boundary query on this string instead
+  // of each query rescanning the whole string. Computed on demand when a caller omits it, so
+  // the function keeps working standalone.
+  function findBoundaryCandidates(text, tier, spans) {
+    const protectedSpans = spans || protectedSpansFor(text);
     const pattern = BOUNDARY_PATTERNS[tier];
     const regex = new RegExp(pattern.source, pattern.flags);
     const candidates = [];
@@ -1089,7 +1223,7 @@
       // at the boundary position (which is after any trailing whitespace) — an abbreviation
       // period is exactly one character, so this is where isProtectedAbbreviationPeriod expects
       // "further text" to begin.
-      if (isProtectedPosition(text, match.index + 1)) continue;
+      if (isPositionInSpans(protectedSpans, match.index + 1)) continue;
       candidates.push({ position, tier });
     }
     return candidates;
@@ -1111,7 +1245,8 @@
   // protected-span boundaries — this is what keeps a long punctuation-free passage containing a
   // protected phrase (e.g. "...is three point one four in...") from being split mid-phrase by a
   // naive word-by-word wrap that knows nothing about protection.
-  function packWordsRespectingProtection(text, maxLength) {
+  function packWordsRespectingProtection(text, maxLength, spans) {
+    const protectedSpans = spans || protectedSpansFor(text);
     const words = text.split(/\s+/).filter(Boolean);
     const chunks = [];
     let current = "";
@@ -1137,7 +1272,7 @@
       }
 
       const candidate = current ? `${current} ${word}` : word;
-      const boundaryIsProtected = current && isProtectedPosition(text, wordStart);
+      const boundaryIsProtected = current && isPositionInSpans(protectedSpans, wordStart);
 
       if (candidate.length > maxLength && current && !boundaryIsProtected) {
         chunks.push(current);
@@ -1151,8 +1286,8 @@
     return chunks;
   }
 
-  function splitAtTierUnconditionally(text, tier) {
-    const candidates = findBoundaryCandidates(text, tier);
+  function splitAtTierUnconditionally(text, tier, spans) {
+    const candidates = findBoundaryCandidates(text, tier, spans);
     if (!candidates.length) return [text];
 
     const pieces = [];
@@ -1169,14 +1304,20 @@
   // pre-007 chunker's granularity, per FR-009); a resulting piece that is still too long then
   // descends through clause and plain-punctuation tiers only as needed, finally falling back to
   // the existing, already-terminating splitLongText. No tier ever merges pieces back together.
-  function splitByTier(text, tier, maxLength) {
+  // `spans` is the protected-span index for THIS `text` only. Span offsets are absolute within
+  // the string they were built from, so it must never be handed to a recursive call operating
+  // on a (trimmed) substring — each level indexes the string it actually scans. That still
+  // removes the quadratic cost, since the blowup came from rescanning the whole string once per
+  // boundary/word at a single level, not from the recursion itself.
+  function splitByTier(text, tier, maxLength, spans) {
+    const protectedSpans = spans || protectedSpansFor(text);
     const tierIndex = TIER_ORDER.indexOf(tier);
     const nextTier = TIER_ORDER[tierIndex + 1];
     const descend = (piece) => (nextTier ? splitByTier(piece, nextTier, maxLength) : packWordsRespectingProtection(piece, maxLength));
     const descendUnconditionally = (piece) => (nextTier ? splitByTier(piece, nextTier, maxLength) : [piece]);
 
     if (UNCONDITIONAL_TIERS.includes(tier)) {
-      const pieces = splitAtTierUnconditionally(text, tier);
+      const pieces = splitAtTierUnconditionally(text, tier, protectedSpans);
       const isNextTierUnconditional = nextTier && UNCONDITIONAL_TIERS.includes(nextTier);
       return pieces.flatMap((piece) => {
         if (isNextTierUnconditional) return descendUnconditionally(piece);
@@ -1185,7 +1326,7 @@
     }
 
     if (text.length <= maxLength) return [text];
-    const pieces = splitAtTierUnconditionally(text, tier);
+    const pieces = splitAtTierUnconditionally(text, tier, protectedSpans);
     if (pieces.length === 1) return descend(text);
     return pieces.flatMap((piece) => (piece.length <= maxLength ? [piece] : descend(piece)));
   }
@@ -1249,12 +1390,43 @@
     if (!chunks.length) return paragraphs.map(() => null);
 
     const chunkWordSets = chunks.map(normalizedWordSet);
+
+    // UI-freeze fix: scoring every paragraph against every chunk is O(paragraphs x chunks) and
+    // a book produces thousands of both (measured 1547ms at 4000x4000). Only chunks sharing at
+    // least one word can score above zero, so an inverted word -> chunk index visits just those
+    // candidates. Shared-word counts are tallied per candidate, which yields exactly the same
+    // score as wordOverlapScore (shared / max(size, size)) without scanning non-overlapping
+    // chunks. Ties still resolve to the lowest chunk index, matching the original's strict
+    // `score > bestScore` scan order.
+    const chunksByWord = new Map();
+    chunkWordSets.forEach((chunkWords, index) => {
+      chunkWords.forEach((word) => {
+        const bucket = chunksByWord.get(word);
+        if (bucket) bucket.push(index);
+        else chunksByWord.set(word, [index]);
+      });
+    });
+
     const rawMatches = paragraphs.map((paragraph) => {
       const paragraphWords = normalizedWordSet(paragraph);
+      if (!paragraphWords.size) return null;
+
+      const sharedCounts = new Map();
+      paragraphWords.forEach((word) => {
+        const bucket = chunksByWord.get(word);
+        if (!bucket) return;
+        bucket.forEach((index) => {
+          sharedCounts.set(index, (sharedCounts.get(index) || 0) + 1);
+        });
+      });
+
       let bestIndex = -1;
       let bestScore = 0;
-      chunkWordSets.forEach((chunkWords, index) => {
-        const score = wordOverlapScore(paragraphWords, chunkWords);
+      sharedCounts.forEach((shared, index) => {
+        const score = shared / Math.max(paragraphWords.size, chunkWordSets[index].size);
+        // Strictly-greater keeps the lowest-indexed chunk on a tie, matching the original
+        // ascending scan. Map iteration follows insertion order, which is ascending here
+        // because postings lists are built in chunk order.
         if (score > bestScore) {
           bestScore = score;
           bestIndex = index;
@@ -1400,7 +1572,10 @@
             body: JSON.stringify({
               input: text,
               voice: options.voice || "af_heart",
-              response_format: "wav",
+              // Defaults to wav so an engine used without an explicit format behaves exactly as
+              // before. "opus" is ~10.5x smaller at real chunk size, which matters only for how
+              // much of a book the browser's audio cache can hold - it buys no playback latency.
+              response_format: options.format || "wav",
               speed: options.speed,
             }),
           });
@@ -1431,9 +1606,83 @@
     defaultTtsEngine = engine;
   }
 
+  // Measured against the local Kokoro server: synthesis costs ~1.55s fixed per call plus
+  // ~0.0143s/char, so a 40-char chunk renders at ~1.1x realtime (playback nearly starves) while
+  // a 260-char chunk reaches ~3.2x. splitIntoSpeechChunks always splits at sentence boundaries
+  // and never merges, so a real book yields 7388 chunks averaging 75 chars, 30% of them under
+  // 40 - each paying the fixed cost for very little audio. This packs already-split chunks back
+  // up to a target, which is a pure concatenation: it never re-splits, so no protected span
+  // (abbreviation, currency phrase, spoken decimal) the splitter kept whole can be cut here.
+  //
+  // OWASP A08:2025 Mishandling of Exceptional Conditions - the target bounds every merged
+  // chunk, keeping requests well inside the TTS server's own 6000-character input limit. A
+  // chunk already at or over the target passes through untouched rather than being split.
+  // `keepFirstChunkShort` leaves the opening chunk exactly as the splitter produced it. Merging
+  // everything improved steady-state throughput (3.44x -> 5.49x realtime on a real book) but
+  // grew the first chunk from 75 to 205 characters, pushing time-to-first-audio from 2.2s to
+  // 4.2s — a regression at the one moment the listener is actually waiting. Holding the opener
+  // back recovers the 2.2s start while keeping the whole steady-state gain, at the cost of a
+  // single extra chunk, so playback begins promptly and the pipeline is already far ahead by
+  // the time that short opener finishes.
+  function mergeShortChunks(chunks, targetLength = 260, { keepFirstChunkShort = false } = {}) {
+    if (keepFirstChunkShort && chunks.length > 1) {
+      return [chunks[0], ...mergeShortChunks(chunks.slice(1), targetLength)];
+    }
+
+    const merged = [];
+    let current = "";
+
+    chunks.forEach((chunk) => {
+      if (!current) {
+        current = chunk;
+        return;
+      }
+      if (current.length + 1 + chunk.length <= targetLength) {
+        current = `${current} ${chunk}`;
+        return;
+      }
+      merged.push(current);
+      current = chunk;
+    });
+
+    if (current) merged.push(current);
+    return merged;
+  }
+
+  // Target length for merged speech chunks. Chosen from measured synthesis cost: at ~260
+  // characters Kokoro renders roughly 3.2x faster than realtime (vs ~1.1x at the unmerged mean
+  // of 75), which is what keeps prefetch comfortably ahead of playback. Well inside the TTS
+  // server's own 6000-character input limit.
+  const SPEECH_CHUNK_TARGET_LENGTH = 260;
+
+  // Audio format requested from the local TTS server: "wav" or "opus". This is the single place
+  // to change it. Opus is ~10.5x smaller at real chunk size (43,250 vs 453,676 bytes measured),
+  // so the 150MB IndexedDB audio cache holds ~3,636 chunks instead of ~346 — a whole book rather
+  // than a fraction of one. It does NOT reduce buffering: loopback transfer is ~0.2ms against a
+  // multi-second synthesis, and Opus costs ~120ms more to encode per request.
+  const AUDIO_FORMAT = "opus";
+
+  const PREFETCH_MIN_AHEAD = 1;   // always keep at least one chunk in flight
+  const PREFETCH_MAX_AHEAD = 6;   // cap so a fast server cannot balloon memory
+  const PREFETCH_SAFETY = 0.9;    // bias toward under-prefetching rather than stalling
+
+  // How many chunks can be synthesised during one chunk's playback. Extracted as a pure
+  // function (the EWMA estimator itself lives below this module's Node boundary and so cannot
+  // be reached from tests) so the observable contract is checkable: a faster server, or longer
+  // chunks that play for longer, both buy more lookahead.
+  function prefetchDepth({ estimatedSynthesisMs, chunkPlaybackMs }) {
+    if (!Number.isFinite(estimatedSynthesisMs) || estimatedSynthesisMs <= 0) {
+      return PREFETCH_MIN_AHEAD;
+    }
+    const ahead = Math.floor(chunkPlaybackMs / (estimatedSynthesisMs / PREFETCH_SAFETY));
+    return Math.min(Math.max(ahead, PREFETCH_MIN_AHEAD), PREFETCH_MAX_AHEAD);
+  }
+
   const api = {
     normalizePdfText,
     splitIntoSpeechChunks,
+    mergeShortChunks,
+    prefetchDepth,
     renderExtractedText,
     renderSpeechFocus,
     extractPositionedItems,
@@ -1505,7 +1754,11 @@
     pendingResumeOffsetSeconds: null,
   };
 
-  const BOOKMARK_VERSION = 1;
+  // Bumped to 2 when short-chunk merging landed: merging changes how narration text maps to
+  // chunk indices, so a bookmark saved against the old chunking would resume at the wrong
+  // passage. readBookmark already discards a record whose version does not match and clears the
+  // key, so pre-merge bookmarks fail closed (a fresh start) rather than silently mis-resuming.
+  const BOOKMARK_VERSION = 2;
   const BOOKMARK_PREFIX = `pdf-reader-bookmark:v${BOOKMARK_VERSION}:`;
 
   const elements = {
@@ -1882,8 +2135,14 @@
       });
     }
 
-    async function sha256Key(text, voice, speed) {
-      const raw = `${voice}|${speed}|${text}`;
+    // `format` participates in the key because the cache stores encoded audio, not samples: the
+    // same text/voice/speed rendered as wav and as opus are different bytes. Omitting it would
+    // let a previously cached wav blob answer an opus request under an identical key — it would
+    // still play (the blob carries its own type), so the switch would appear to work while the
+    // cache silently kept serving wav and none of the capacity benefit materialised. Defaults to
+    // "wav" so keys written by callers that pass no format keep their existing meaning.
+    async function sha256Key(text, voice, speed, format = "wav") {
+      const raw = `${voice}|${speed}|${format}|${text}`;
       const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
       return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
     }
@@ -1952,10 +2211,12 @@
     // α_fast tracks short-term spikes; α_slow tracks steady-state trend
     const ALPHA_FAST = 0.3;
     const ALPHA_SLOW = 0.05;
-    const SAFETY = 0.9;          // conservative bias — prefer fewer prefetches over stalls
-    const MIN_AHEAD = 1;         // always prefetch at least 1 chunk ahead
-    const MAX_AHEAD = 6;         // cap to avoid memory bloat
-    const CHUNK_PLAY_MS = 2500;  // approximate playback duration per chunk (ms)
+    // Playback duration of one chunk. The old value (2500) was a guess that badly understated
+    // reality: at the merge target, a chunk carries roughly 9s of audio (measured 260 chars ->
+    // 16.6s, and Kokoro renders ~0.12s of speech per character). Dividing by too small a number
+    // made lookahead() systematically under-prefetch — it concluded it could only afford one
+    // chunk ahead when the server was comfortably able to stay 5-6 ahead.
+    const CHUNK_PLAY_MS = 9000;
 
     let fast = null;
     let slow = null;
@@ -1967,12 +2228,12 @@
     }
 
     function lookahead() {
-      if (fast === null) return MIN_AHEAD;
+      if (fast === null) return prefetchDepth({ estimatedSynthesisMs: 0, chunkPlaybackMs: CHUNK_PLAY_MS });
       // Conservative estimate: use the slower (higher) of the two windows
-      const estimatedMs = Math.max(fast, slow) / SAFETY;
-      // How many chunks can Kokoro synthesise in one chunk's play window?
-      const ahead = Math.floor(CHUNK_PLAY_MS / estimatedMs);
-      return Math.min(Math.max(ahead, MIN_AHEAD), MAX_AHEAD);
+      return prefetchDepth({
+        estimatedSynthesisMs: Math.max(fast, slow),
+        chunkPlaybackMs: CHUNK_PLAY_MS,
+      });
     }
 
     function reset() { fast = null; slow = null; }
@@ -1996,11 +2257,13 @@
     const voice = elements.voice.value.trim() || "af_heart";
     const speed = Number(elements.rate.value);
 
-    const promise = ttsCache.sha256Key(chunkText, voice, speed).then(async (cacheKey) => {
+    const promise = ttsCache.sha256Key(chunkText, voice, speed, AUDIO_FORMAT).then(async (cacheKey) => {
       const cached = await ttsCache.get(cacheKey);
       if (cached) return cached;
 
-      const result = await defaultTtsEngine.synthesize(chunkText, { voice, speed, endpoint });
+      const result = await defaultTtsEngine.synthesize(chunkText, {
+        voice, speed, endpoint, format: AUDIO_FORMAT,
+      });
       if (result.synthesisMs !== undefined) ewma.record(result.synthesisMs);
       ttsCache.put(cacheKey, result.blob).catch(() => {});
       return result.blob;
@@ -2330,7 +2593,16 @@
       const result = isEpub ? await extractEpubText(file) : await extractPdfText(file);
       if (loadId !== state.loadId) return;
       state.text = result.text;
-      state.chunks = splitIntoSpeechChunks(result.narrationText || result.text);
+      // Merging short chunks back up to the synthesis target is what keeps playback ahead of
+      // the listener: unmerged, a real book averages 75 characters per chunk, which Kokoro
+      // renders at only ~1.1x realtime, so the pipeline can barely outpace playback. Merged,
+      // chunks reach ~3.2x realtime. Merging happens here rather than inside
+      // splitIntoSpeechChunks so the splitter's own protected-span contract is untouched.
+      state.chunks = mergeShortChunks(
+        splitIntoSpeechChunks(result.narrationText || result.text),
+        SPEECH_CHUNK_TARGET_LENGTH,
+        { keepFirstChunkShort: true },
+      );
       state.paragraphChunkMap = null;
       state.chunkIndex = 0;
       state.highlightOffset = 0;
