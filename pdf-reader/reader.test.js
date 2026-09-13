@@ -2772,6 +2772,172 @@ test("choosing an EPUB file extracts its chapter text and enables playback", asy
 // heading ("Introduction", "Summary", "Continued") scores both occurrences equally against the
 // same chunk, so clicking the second sends the listener back to the first section. The pipeline
 // knows they are different blocks with different chunks, so the reader should too.
+// Spec 010 US1 (FR-001, FR-002): a block whose text is entirely whitespace has nothing to read,
+// but survived into the passage list because passages were filtered on raw length. Each one
+// rendered as a full-height clickable row that also consumed a paragraph number, so the pane
+// showed empty rows and its numbering appeared to skip.
+test("a document with whitespace-only blocks renders no blank passages (spec 010 US1)", async () => {
+  const app = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPositionedPdf([
+      "The first real paragraph of the document.",
+      "   ",
+      " ",
+      "The second real paragraph of the document.",
+    ])),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", {
+      target: { files: [createFile("spacers.pdf")] },
+    });
+
+    const passages = app.elements.textOutput.children.filter(
+      (node) => node.className && node.className.startsWith("literal-paragraph"),
+    );
+
+    assert.deepEqual(
+      passages.map((node) => node.textContent),
+      ["The first real paragraph of the document.", "The second real paragraph of the document."],
+    );
+  } finally {
+    app.restore();
+  }
+});
+
+// Spec 010 US1, Edge Cases: the guard against over-filtering. A lone "." has a visible character,
+// so it is a real passage — a fix that dropped every short passage would satisfy the test above
+// while silently swallowing legitimate content.
+test("a block of a single visible character still renders as a passage (spec 010 US1)", async () => {
+  const app = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPositionedPdf([
+      "A paragraph of ordinary length here.",
+      ".",
+      "Another paragraph of ordinary length.",
+    ])),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", {
+      target: { files: [createFile("dot.pdf")] },
+    });
+
+    const passages = app.elements.textOutput.children.filter(
+      (node) => node.className && node.className.startsWith("literal-paragraph"),
+    );
+
+    assert.ok(
+      passages.some((node) => node.textContent === "."),
+      "expected a single-character passage to survive filtering",
+    );
+  } finally {
+    app.restore();
+  }
+});
+
+// Spec 010 US2 (FR-005): a blank row still carried a data-chunk-index, so clicking it jumped
+// playback to an unrelated chunk. Every clickable row must correspond to text that exists.
+test("every clickable passage has visible text (spec 010 US2)", async () => {
+  const app = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPositionedPdf([
+      "The opening paragraph of the document.",
+      "   ",
+      "The closing paragraph of the document.",
+    ])),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", {
+      target: { files: [createFile("clickable.pdf")] },
+    });
+
+    const clickable = app.elements.textOutput.children.filter(
+      (node) => node.getAttribute && node.getAttribute("data-chunk-index") !== undefined
+        && node.getAttribute("data-chunk-index") !== null,
+    );
+
+    assert.ok(clickable.length > 0, "expected at least one clickable passage");
+    clickable.forEach((node) => {
+      assert.ok(
+        String(node.textContent).trim().length > 0,
+        `a clickable passage had no visible text: ${JSON.stringify(node.textContent)}`,
+      );
+    });
+  } finally {
+    app.restore();
+  }
+});
+
+// Spec 010 US3 (FR-006, FR-007): the trap. Removing blank passages from the display list alone
+// makes the narrated-passage count diverge from the narrated-block count, which is the equality
+// the reader uses to decide whether its exact passage-to-chunk mapping applies. Losing it drops
+// the document onto word-overlap similarity matching, which cannot tell two identically-worded
+// passages apart — so the later "Introduction" would send the listener back to the first section.
+// This is the only test here that fails when the alignment invariant breaks.
+test("a document with whitespace-only blocks keeps the exact passage mapping (spec 010 US3)", async () => {
+  const app = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPositionedPdf([
+      "Introduction",
+      "The opening section explains the background and scope of the work in detail.",
+      "   ",
+      "Introduction",
+      "The closing section revisits the background and scope once more for the reader.",
+    ])),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", {
+      target: { files: [createFile("repeated-with-spacer.pdf")] },
+    });
+
+    const headings = app.elements.textOutput.children.filter(
+      (node) => node.textContent === "Introduction",
+    );
+    assert.equal(headings.length, 2, "expected both repeated headings to render as passages");
+
+    const first = Number(headings[0].getAttribute("data-chunk-index"));
+    const second = Number(headings[1].getAttribute("data-chunk-index"));
+    assert.ok(
+      second > first,
+      `expected the exact mapping to survive blank-block filtering, but both "Introduction" `
+        + `passages resolved to chunk ${first}`,
+    );
+  } finally {
+    app.restore();
+  }
+});
+
 test("clicking a repeated heading jumps to that occurrence, not back to the first one", async () => {
   const app = loadBrowserApp({
     speech: false,

@@ -677,7 +677,7 @@
       .flatMap((section) => section.blocks)
       .flatMap((block) => String(block.text || "")
         .split(/\n\n/)
-        .filter((text) => text.length > 0)
+        .filter(hasVisibleText)
         .map((text) => ({ text, speak: block.speak !== false })));
   }
 
@@ -1035,11 +1035,17 @@
   // block's individual lines ("devel-" + "opment" -> "development") and the AST carries only the
   // already-joined text. Rejoining these with blank lines reproduces renderNarrationText's output
   // exactly, so nothing about what is spoken depends on which of the two is used.
+  // Blocks with no visible text are excluded here for the same reason they are excluded from the
+  // passage list, and excluding them in only one of the two places is a silent defect: the reader
+  // uses `narratedPassages.length === narrationBlocks.length` to decide whether its exact
+  // passage-to-chunk mapping applies, so a divergence drops the document onto similarity matching
+  // — slower, and unable to tell two identically-worded passages apart. Nothing spoken changes,
+  // because a whitespace-only block produces no speech chunks either way.
   function renderNarrationBlocks(orderedBlocksByPage, policy) {
     const resolvedPolicy = resolveSpeechPolicy(policy);
     return orderedBlocksByPage
       .flat()
-      .filter((block) => shouldSpeak(block.type, resolvedPolicy))
+      .filter((block) => shouldSpeak(block.type, resolvedPolicy) && hasVisibleText(block.text))
       .map((block) => normalizeSpokenText(stripCitationsAndUrls(joinBlockLinesWithDehyphenation(block))));
   }
 
@@ -1257,6 +1263,16 @@
     return false;
   }
   // --- end protected-span index ---
+
+  // A block whose text is entirely whitespace has nothing to read. It is not rendered as a
+  // passage, because an empty clickable row occupies a line, consumes a paragraph number, and
+  // still carries a playback target that sends a click somewhere unrelated.
+  //
+  // This decides membership only — a passage that is kept retains its text exactly as the block
+  // produced it, whitespace included (spec 010 FR-003).
+  function hasVisibleText(text) {
+    return String(text || "").trim().length > 0;
+  }
 
   // research.md Decision 1 (revised): each tier's regex identifies where that tier's boundary
   // falls; the boundary "position" is the offset right after the punctuation/whitespace run, so
@@ -2158,7 +2174,7 @@
   // one.
   function resolvePassages(text, passages) {
     if (passages && passages.length) return passages.map((passage) => passage.text);
-    return String(text || "").split(/\n\n/).filter((paragraph) => paragraph.length > 0);
+    return String(text || "").split(/\n\n/).filter(hasVisibleText);
   }
 
   // One clickable passage button. A passage with no mapped chunk is rendered disabled rather than
