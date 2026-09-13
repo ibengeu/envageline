@@ -1550,15 +1550,6 @@
     return new Set(words.filter((word) => !OVERLAP_STOPWORDS.has(word)));
   }
 
-  function wordOverlapScore(a, b) {
-    if (!a.size || !b.size) return 0;
-    let shared = 0;
-    for (const word of a) {
-      if (b.has(word)) shared += 1;
-    }
-    return shared / Math.max(a.size, b.size);
-  }
-
   // Maps each display paragraph to its best-matching narration chunk index, for click-to-jump
   // in the literal (default) reading pane. Display text and narration text can diverge
   // (headers/footers/citations/URLs removed, columns reordered, per FR-009/research.md §10),
@@ -1573,7 +1564,7 @@
     // a book produces thousands of both (measured 1547ms at 4000x4000). Only chunks sharing at
     // least one word can score above zero, so an inverted word -> chunk index visits just those
     // candidates. Shared-word counts are tallied per candidate, which yields exactly the same
-    // score as wordOverlapScore (shared / max(size, size)) without scanning non-overlapping
+    // score the direct comparison did (shared / max(size, size)) without scanning non-overlapping
     // chunks. Ties still resolve to the lowest chunk index, matching the original's strict
     // `score > bestScore` scan order.
     const chunksByWord = new Map();
