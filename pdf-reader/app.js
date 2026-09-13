@@ -666,12 +666,19 @@
   // Splitting those keeps such documents rendering exactly the passages the blank-line split
   // produced before structural passages existed; blocks reconstructed from real geometry contain
   // no blank line and pass through whole.
+  //
+  // Each passage also carries whether its block is narrated, because passages and speech chunks
+  // live in different index spaces: every block becomes a passage, but only speakable ones become
+  // chunks. A footnote is a passage the listener can see and click, yet no chunk contains its
+  // text, so the two lists cannot be zipped positionally.
   function documentPassages(document) {
     if (!document || !document.sections) return [];
     return document.sections
       .flatMap((section) => section.blocks)
-      .flatMap((block) => String(block.text || "").split(/\n\n/))
-      .filter((text) => text.length > 0);
+      .flatMap((block) => String(block.text || "")
+        .split(/\n\n/)
+        .filter((text) => text.length > 0)
+        .map((text) => ({ text, speak: block.speak !== false })));
   }
 
   const CITATION_MARKER_PATTERN = /\[\d+(?:[,\-–]\s*\d+)*\]/g;
@@ -986,6 +993,23 @@
 
     const joinedText = narratableBlocks.map(joinBlockLinesWithDehyphenation).join("\n\n");
     return normalizeSpokenText(stripCitationsAndUrls(joinedText));
+  }
+
+  // The same narration pipeline as renderNarrationText, but kept per block instead of joined into
+  // one string. Chunking each block's narration separately is what lets the reader record the
+  // exact block -> chunk relationship; joined, that relationship can only be guessed at afterwards
+  // by text similarity.
+  //
+  // This has to run here rather than over the document AST, because dehyphenation needs each
+  // block's individual lines ("devel-" + "opment" -> "development") and the AST carries only the
+  // already-joined text. Rejoining these with blank lines reproduces renderNarrationText's output
+  // exactly, so nothing about what is spoken depends on which of the two is used.
+  function renderNarrationBlocks(orderedBlocksByPage, policy) {
+    const resolvedPolicy = resolveSpeechPolicy(policy);
+    return orderedBlocksByPage
+      .flat()
+      .filter((block) => shouldSpeak(block.type, resolvedPolicy))
+      .map((block) => normalizeSpokenText(stripCitationsAndUrls(joinBlockLinesWithDehyphenation(block))));
   }
 
   // research.md Decision 2, spec.md Assumptions: a fixed, non-extensible abbreviation list.
@@ -1418,6 +1442,77 @@
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on",
     "or", "that", "the", "this", "to", "was", "were", "with",
   ]);
+
+  // Builds the passage -> chunk index map exactly, from the block mapping recorded while
+  // chunking, rather than by scoring text similarity. Passages and chunks live in different
+  // index spaces (every block is a passage; only speakable blocks produce chunks), so speakable
+  // passages are walked in step with the block mapping while a passage that is never narrated
+  // takes the chunk of the last narrated passage before it — the nearest preceding chunk, which
+  // is where a listener clicking it expects to land. A non-narrated passage before any narrated
+  // one falls back to the first chunk, matching the existing positional fallback.
+  // Chooses between chunking each narrated block separately — which records the exact passage ->
+  // chunk relationship as it goes — and chunking the joined narration, which loses it and leaves
+  // the reader to recover it afterwards by scoring text similarity.
+  //
+  // The exact path needs each passage to correspond to exactly one narrated block. That holds when
+  // the pipeline reconstructed real blocks from item geometry, and fails for a PDF whose items
+  // carry no usable positions: everything collapses into one block, which then splits back into
+  // several passages on its blank lines. Comparing the counts detects that directly rather than
+  // inferring it from the geometry.
+  //
+  // A document where nothing is narrated at all (every block classified as a header, footer or
+  // other excluded type) also takes the joined path: narration comes out empty there, and only
+  // that path's fallback to display text keeps such a document playable.
+  function buildChunksAndMapping(result, passages) {
+    const narrated = passages ? passages.filter((passage) => passage.speak) : [];
+    const canMapExactly = Boolean(result.narrationBlocks)
+      && result.narrationBlocks.length > 0
+      && narrated.length === result.narrationBlocks.length;
+
+    if (!canMapExactly) {
+      return {
+        chunks: mergeShortChunks(
+          splitIntoSpeechChunks(result.narrationText || result.text),
+          SPEECH_CHUNK_TARGET_LENGTH,
+          { keepFirstChunkShort: true },
+        ),
+        paragraphChunkMap: null,
+      };
+    }
+
+    // These are block-level narration strings, so what is spoken is unchanged: rejoining them
+    // reproduces narrationText exactly, and the chunks are byte-identical to chunking it.
+    const perBlock = chunkBlocksWithMapping(result.narrationBlocks, SPEECH_CHUNK_TARGET_LENGTH);
+    const merged = mergeChunksWithMapping(
+      perBlock.chunks,
+      SPEECH_CHUNK_TARGET_LENGTH,
+      { keepFirstChunkShort: true },
+    );
+    return {
+      chunks: merged.chunks,
+      paragraphChunkMap: passageChunkMap(
+        passages,
+        perBlock.firstChunkIndexByBlock,
+        merged.postIndexByPreIndex,
+      ),
+    };
+  }
+
+  function passageChunkMap(passages, firstChunkIndexByBlock, postIndexByPreIndex) {
+    let speakableIndex = 0;
+    let lastChunkIndex = 0;
+
+    return passages.map((passage) => {
+      if (!passage.speak) return lastChunkIndex;
+
+      const preMergeIndex = firstChunkIndexByBlock[speakableIndex];
+      speakableIndex += 1;
+      if (preMergeIndex === undefined) return lastChunkIndex;
+
+      lastChunkIndex = postIndexByPreIndex[preMergeIndex];
+      return lastChunkIndex;
+    });
+  }
 
   function normalizedWordSet(text) {
     const words = String(text || "").toLowerCase().match(/[a-z0-9']+/g) || [];
@@ -2051,7 +2146,7 @@
   // chapter-separated by blank lines — the fallback is the correct path for them, not a degraded
   // one.
   function resolvePassages(text, passages) {
-    if (passages && passages.length) return passages;
+    if (passages && passages.length) return passages.map((passage) => passage.text);
     return String(text || "").split(/\n\n/).filter((paragraph) => paragraph.length > 0);
   }
 
@@ -2502,9 +2597,10 @@
     const columnLayoutByPage = columnedBlocksByPage.map(pageColumnLayout);
     const orderedBlocksByPage = resolveReadingOrder(columnedBlocksByPage, columnLayoutByPage);
     const narrationText = renderNarrationText(orderedBlocksByPage, resolvedPolicy);
+    const narrationBlocks = renderNarrationBlocks(orderedBlocksByPage, resolvedPolicy);
     const document = buildDocumentAst(orderedBlocksByPage, resolvedPolicy);
 
-    return { displayText, narrationText, document };
+    return { displayText, narrationText, narrationBlocks, document };
   }
 
   // Watches for PDF.js's fake-worker console warning during `loadDocument`, without owning or
@@ -2563,7 +2659,7 @@
       setStatus(`Reading page ${pageNumber} of ${pdf.numPages}...`);
     }
 
-    const { displayText, narrationText, document } = await buildPipelineOutput(pagesOfItems, pageWidth, pageHeight);
+    const { displayText, narrationText, narrationBlocks, document } = await buildPipelineOutput(pagesOfItems, pageWidth, pageHeight);
 
     return {
       pageCount: pdf.numPages,
@@ -2574,6 +2670,10 @@
       // re-deriving passages by splitting displayText on blank lines — a split that cannot
       // recover a boundary between blocks that displayText joins with a single space.
       passages: documentPassages(document),
+      // Per-block narration, in the same order as the speakable passages above. Chunking these
+      // individually is what records the exact passage -> chunk relationship; chunking the joined
+      // narrationText loses it.
+      narrationBlocks,
     };
   }
 
@@ -2721,13 +2821,11 @@
       // renders at only ~1.1x realtime, so the pipeline can barely outpace playback. Merged,
       // chunks reach ~3.2x realtime. Merging happens here rather than inside
       // splitIntoSpeechChunks so the splitter's own protected-span contract is untouched.
-      state.chunks = mergeShortChunks(
-        splitIntoSpeechChunks(result.narrationText || result.text),
-        SPEECH_CHUNK_TARGET_LENGTH,
-        { keepFirstChunkShort: true },
-      );
-      state.paragraphChunkMap = null;
       state.passages = result.passages && result.passages.length ? result.passages : null;
+
+      const { chunks, paragraphChunkMap } = buildChunksAndMapping(result, state.passages);
+      state.chunks = chunks;
+      state.paragraphChunkMap = paragraphChunkMap;
       state.chunkIndex = 0;
       state.highlightOffset = 0;
       state.localAudioCache.clear();

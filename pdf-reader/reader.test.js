@@ -2732,6 +2732,49 @@ test("choosing an EPUB file extracts its chapter text and enables playback", asy
 // documentPassages yields nothing. Their text is genuinely chapter-separated by blank lines, so
 // the blank-line split is the correct path for them rather than a degraded one — this guards that
 // a document with no structural passages still renders one clickable passage per chapter.
+// Similarity scoring cannot tell two identical passages apart: a document with a repeated
+// heading ("Introduction", "Summary", "Continued") scores both occurrences equally against the
+// same chunk, so clicking the second sends the listener back to the first section. The pipeline
+// knows they are different blocks with different chunks, so the reader should too.
+test("clicking a repeated heading jumps to that occurrence, not back to the first one", async () => {
+  const app = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPositionedPdf([
+      "Introduction",
+      "The opening section explains the background and scope of the work in detail.",
+      "Introduction",
+      "The closing section revisits the background and scope once more for the reader.",
+    ])),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", {
+      target: { files: [createFile("repeated.pdf")] },
+    });
+
+    const headings = app.elements.textOutput.children.filter(
+      (node) => node.textContent === "Introduction",
+    );
+    assert.equal(headings.length, 2, "expected both repeated headings to render as passages");
+
+    const first = Number(headings[0].getAttribute("data-chunk-index"));
+    const second = Number(headings[1].getAttribute("data-chunk-index"));
+    assert.ok(
+      second > first,
+      `expected the second "Introduction" to jump forward, but both resolved to chunk ${first}`,
+    );
+  } finally {
+    app.restore();
+  }
+});
+
 test("an EPUB with no structural blocks still renders one clickable passage per chapter", async () => {
   const app = loadBrowserApp({
     speech: false,
