@@ -1407,8 +1407,21 @@
     return { chunks, firstChunkIndexByBlock };
   }
 
+  // Ordinary function words carry no signal about which passage a chunk came from, but they are
+  // the words most likely to be shared by two otherwise unrelated pieces of text. Counting them
+  // lets a passage that was never narrated at all (a footnote, header, caption or table) score
+  // above zero against an arbitrary chunk on nothing but a shared "the" — and the best of those
+  // meaningless scores wins, which for a passage late in the document is typically an early
+  // chunk. Excluding them drives such passages to a score of zero so they fall through to the
+  // positional fallback instead, while leaving genuine matches ranked exactly as before.
+  const OVERLAP_STOPWORDS = new Set([
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on",
+    "or", "that", "the", "this", "to", "was", "were", "with",
+  ]);
+
   function normalizedWordSet(text) {
-    return new Set(String(text || "").toLowerCase().match(/[a-z0-9']+/g) || []);
+    const words = String(text || "").toLowerCase().match(/[a-z0-9']+/g) || [];
+    return new Set(words.filter((word) => !OVERLAP_STOPWORDS.has(word)));
   }
 
   function wordOverlapScore(a, b) {

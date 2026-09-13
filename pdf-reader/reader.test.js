@@ -1864,6 +1864,36 @@ test("mapParagraphsToChunks falls back to the nearest chunk by position when a p
   assert.equal(mapping[2], 1);
 });
 
+// A passage whose text never reaches narration (a footnote, header, caption or table) shares no
+// meaningful words with any chunk, but it does share ordinary function words like "the". A single
+// such word is enough to score above zero, and the best of those meaningless scores wins — which
+// for a passage late in the document is routinely an early chunk. Clicking a footnote then throws
+// the listener back to the start of the document instead of leaving them near where they clicked.
+test("a passage that was never narrated does not jump playback backwards to the document start", () => {
+  // Shaped as the pipeline really produces: body paragraphs that open with "The", and a merged
+  // chunk carrying two of them. The footnote's only word in common with any chunk is "the", which
+  // is exactly what makes the spurious match possible — a fixture whose chunks happen to share no
+  // function words with the footnote cannot reproduce this.
+  const paragraphs = [
+    "The first body paragraph of the chapter.",
+    "The second body paragraph follows here.",
+    "The third body paragraph continues on.",
+    "1. A small footnote at the bottom.",
+  ];
+  const chunks = [
+    "The first body paragraph of the chapter.",
+    "The second body paragraph follows here. The third body paragraph continues on.",
+  ];
+
+  const mapping = mapParagraphsToChunks(paragraphs, chunks);
+
+  assert.equal(mapping[0], 0);
+  assert.equal(mapping[1], 1);
+  assert.equal(mapping[2], 1);
+  // The footnote matches no chunk, so it belongs at the nearest preceding one — never back at 0.
+  assert.equal(mapping[3], 1);
+});
+
 test("mapParagraphsToChunks returns an empty mapping when there are no chunks", () => {
   const mapping = mapParagraphsToChunks(["Some paragraph."], []);
 
@@ -2356,13 +2386,22 @@ function createPdf(text, pageCount = 1) {
 // getViewport for page dimensions. Block reconstruction is entirely position-driven, so only a
 // fixture with real geometry can produce more than one structural block. Each entry in
 // `paragraphs` is laid out as its own vertically separated line.
+// Each entry is either a string (laid out as body text on the default vertical rhythm) or an
+// object { text, fontSize, y } placing it explicitly — a small font in the footer zone is what
+// makes the pipeline classify a block as a footnote, which is excluded from narration while
+// still appearing as a passage.
 function createPositionedPdf(paragraphs, { pageWidth = 600, pageHeight = 800, fontSize = 12 } = {}) {
-  const items = paragraphs.map((text, index) => ({
-    str: text,
-    transform: [fontSize, 0, 0, fontSize, 50, 700 - index * 100],
-    width: 200,
-    height: fontSize,
-  }));
+  const items = paragraphs.map((entry, index) => {
+    const text = typeof entry === "string" ? entry : entry.text;
+    const size = (typeof entry === "object" && entry.fontSize) || fontSize;
+    const y = typeof entry === "object" && entry.y !== undefined ? entry.y : 700 - index * 100;
+    return {
+      str: text,
+      transform: [size, 0, 0, size, 50, y],
+      width: 200,
+      height: size,
+    };
+  });
   return {
     numPages: 1,
     async getPage() {
