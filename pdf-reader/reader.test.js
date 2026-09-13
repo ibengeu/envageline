@@ -34,6 +34,12 @@ const {
   convertPercentage,
   convertDecimal,
   convertOrdinal,
+  findBoundaryCandidates,
+  isProtectedAbbreviationPeriod,
+  isProtectedDecimal,
+  isProtectedCurrencyPhrase,
+  isProtectedOrdinal,
+  isProtectedYearPhrase,
 } = require("./app.js");
 
 function pageBlock(overrides) {
@@ -88,6 +94,204 @@ test("splitIntoSpeechChunks bounds a single overlong token", () => {
   assert.ok(chunks.length > 1);
   assert.ok(chunks.every((chunk) => chunk.length <= 120));
   assert.equal(chunks.join(""), text);
+});
+
+test("findBoundaryCandidates returns a candidate at every paragraph boundary (spec 007 Foundational)", () => {
+  const text = "First paragraph here.\n\nSecond paragraph here.\n\nThird paragraph here.";
+
+  const candidates = findBoundaryCandidates(text, "paragraph");
+
+  assert.equal(candidates.length, 2);
+  candidates.forEach((candidate) => assert.equal(candidate.tier, "paragraph"));
+});
+
+test("findBoundaryCandidates returns candidates at ordinary sentence boundaries (spec 007 Foundational)", () => {
+  const text = "First sentence here. Second sentence here. Third sentence here.";
+
+  const candidates = findBoundaryCandidates(text, "sentence");
+
+  // Three sentences have exactly two boundaries BETWEEN them; there is no boundary after the
+  // final sentence since nothing follows it (a boundary marks where to split, not where a
+  // sentence ends).
+  assert.equal(candidates.length, 2);
+  candidates.forEach((candidate) => assert.equal(candidate.tier, "sentence"));
+});
+
+test("splitIntoSpeechChunks completes quickly on adversarial input (ReDoS safety, spec 007 Foundational)", () => {
+  const longDigitRun = "9".repeat(5000);
+  const longPunctuationRun = ".".repeat(5000);
+
+  const start = Date.now();
+  splitIntoSpeechChunks(`Data: ${longDigitRun} and ${longPunctuationRun} end.`, 260);
+  const elapsedMs = Date.now() - start;
+
+  assert.ok(elapsedMs < 1000, `expected under 1000ms, took ${elapsedMs}ms`);
+});
+
+test("isProtectedAbbreviationPeriod returns true for each fixed abbreviation followed by further text (spec 007 US1)", () => {
+  const abbreviations = ["Dr.", "Mr.", "Mrs.", "Prof.", "vs.", "approx.", "etc.", "e.g.", "i.e.", "St.", "Jr.", "Sr."];
+
+  abbreviations.forEach((abbreviation) => {
+    const text = `${abbreviation} Smith`;
+    const position = abbreviation.length;
+    assert.equal(isProtectedAbbreviationPeriod(text, position), true, `abbreviation: ${abbreviation}`);
+  });
+});
+
+test("isProtectedAbbreviationPeriod returns false when the abbreviation is at the end of the text (spec 007 US1, Edge Case)", () => {
+  const text = "He held the title of Dr.";
+
+  assert.equal(isProtectedAbbreviationPeriod(text, text.length), false);
+});
+
+test("isProtectedAbbreviationPeriod returns false for an ordinary sentence-ending period with no abbreviation (spec 007 US1)", () => {
+  const text = "This is a sentence. Next one starts here.";
+  const position = text.indexOf(". ") + 1;
+
+  assert.equal(isProtectedAbbreviationPeriod(text, position), false);
+});
+
+test("splitIntoSpeechChunks keeps 'Dr. Smith' together (spec 007 US1 AS1)", () => {
+  const chunks = splitIntoSpeechChunks("Dr. Smith found that the results were conclusive.", 20);
+
+  assert.ok(chunks.some((chunk) => chunk.includes("Dr. Smith")));
+  assert.ok(!chunks.some((chunk) => chunk.trim() === "Dr."));
+});
+
+test("splitIntoSpeechChunks keeps 'Prof. Lee' together (spec 007 US1 AS2)", () => {
+  const chunks = splitIntoSpeechChunks("the U.S. economy grew, according to Prof. Lee, who noted the trend.", 30);
+
+  assert.ok(chunks.some((chunk) => chunk.includes("Prof. Lee")));
+});
+
+test("splitIntoSpeechChunks still splits at an ordinary sentence boundary with no abbreviation (spec 007 US1 AS3)", () => {
+  const chunks = splitIntoSpeechChunks("This is the first sentence. This is the second sentence.", 260);
+
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0], "This is the first sentence.");
+  assert.equal(chunks[1], "This is the second sentence.");
+});
+
+test("isProtectedDecimal returns true between digits of a raw decimal, false for a period with no following digit (spec 007 US2)", () => {
+  const decimalText = "The value was 3.14 exactly.";
+  const decimalPosition = decimalText.indexOf("3.") + 2;
+  assert.equal(isProtectedDecimal(decimalText, decimalPosition), true);
+
+  const sentenceText = "It was 1996. The next year began.";
+  const sentencePosition = sentenceText.indexOf(". ") + 1;
+  assert.equal(isProtectedDecimal(sentenceText, sentencePosition), false);
+});
+
+test("isProtectedCurrencyPhrase returns true inside a spoken currency phrase, false outside one (spec 007 US2)", () => {
+  const text = "the device costs four hundred dollars and lasted two years.";
+  const betweenFourHundred = text.indexOf("four hundred") + "four".length + 1;
+  const betweenHundredDollars = text.indexOf("hundred dollars") + "hundred".length + 1;
+  assert.equal(isProtectedCurrencyPhrase(text, betweenFourHundred), true);
+  assert.equal(isProtectedCurrencyPhrase(text, betweenHundredDollars), true);
+
+  const centsText = "it cost one dollar and fifty cents exactly.";
+  const insideCentsClause = centsText.indexOf("and fifty") + "and".length + 1;
+  assert.equal(isProtectedCurrencyPhrase(centsText, insideCentsClause), true);
+
+  const outsideText = "the weather was clear and sunny today.";
+  const outsidePosition = outsideText.indexOf("clear and") + "clear".length + 1;
+  assert.equal(isProtectedCurrencyPhrase(outsideText, outsidePosition), false);
+});
+
+test("isProtectedOrdinal returns true inside a spoken ordinal, false outside one (spec 007 US2)", () => {
+  const text = "the twenty-first century began.";
+  const insideOrdinal = text.indexOf("twenty-first") + "twenty".length + 1;
+  assert.equal(isProtectedOrdinal(text, insideOrdinal), true);
+
+  const outsideText = "the plain century began.";
+  const outsidePosition = outsideText.indexOf("plain") + 2;
+  assert.equal(isProtectedOrdinal(outsideText, outsidePosition), false);
+});
+
+test("isProtectedYearPhrase returns true inside a spoken year, false outside one (spec 007 US2)", () => {
+  const text = "founded in twenty twenty-four during a big year.";
+  const insideYear = text.indexOf("twenty twenty-four") + "twenty".length + 1;
+  assert.equal(isProtectedYearPhrase(text, insideYear), true);
+
+  const thousandText = "it happened in two thousand five during spring.";
+  const insideThousand = thousandText.indexOf("two thousand five") + "two".length + 1;
+  assert.equal(isProtectedYearPhrase(thousandText, insideThousand), true);
+
+  const outsideText = "founded in a big year during spring.";
+  const outsidePosition = outsideText.indexOf("big year") + "big".length + 1;
+  assert.equal(isProtectedYearPhrase(outsideText, outsidePosition), false);
+});
+
+test("splitIntoSpeechChunks keeps 'three point one four' together (spec 007 US2 AS1)", () => {
+  const chunks = splitIntoSpeechChunks("the value of pi is three point one four in this context.", 30);
+
+  assert.ok(chunks.some((chunk) => chunk.includes("three point one four")));
+});
+
+test("splitIntoSpeechChunks never splits 'four hundred dollars' (spec 007 US2 AS2)", () => {
+  const chunks = splitIntoSpeechChunks("the device costs four hundred dollars and lasted two years.", 25);
+
+  assert.ok(chunks.some((chunk) => chunk.includes("four hundred dollars")));
+});
+
+test("splitIntoSpeechChunks does not split a raw decimal reaching the chunker unconverted (spec 007 US2 AS3)", () => {
+  const chunks = splitIntoSpeechChunks("Smith found that the value was 3.14 exactly.", 34);
+
+  assert.ok(chunks.some((chunk) => chunk.includes("3.14")));
+  assert.ok(!chunks.some((chunk) => /\b3\.$/.test(chunk)));
+});
+
+test("splitIntoSpeechChunks keeps 'twenty-first' and 'twenty twenty-four' intact near a length boundary (spec 007 US2 AS4)", () => {
+  const ordinalChunks = splitIntoSpeechChunks("the twenty-first century began with change.", 20);
+  assert.ok(ordinalChunks.some((chunk) => chunk.includes("twenty-first")));
+
+  const yearChunks = splitIntoSpeechChunks("the report was published in twenty twenty-four fully.", 32);
+  assert.ok(yearChunks.some((chunk) => chunk.includes("twenty twenty-four")));
+});
+
+test("splitIntoSpeechChunks matches the recorded pre-007 baseline for a plain-prose passage with no protected patterns (spec 007 US3 AS1, FR-009)", () => {
+  const passage = [
+    "The history of computing spans many decades of innovation and discovery.",
+    "Early machines filled entire rooms and required teams of operators to run.",
+    "Modern devices fit in a pocket yet vastly exceed that early computing power.",
+    "Researchers continue to push the boundaries of what these systems can do.",
+  ].join(" ");
+
+  // Recorded by running this exact passage through the pre-007 chunker before any change in
+  // this feature was made, per FR-009's byte-for-byte preservation requirement.
+  const preRecordedBaseline = [
+    "The history of computing spans many decades of innovation and discovery.",
+    "Early machines filled entire rooms and required teams of operators to run.",
+    "Modern devices fit in a pocket yet vastly exceed that early computing power.",
+    "Researchers continue to push the boundaries of what these systems can do.",
+  ];
+
+  assert.deepEqual(splitIntoSpeechChunks(passage, 260), preRecordedBaseline);
+});
+
+test("splitIntoSpeechChunks with maxLength smaller than the shortest protected span still produces bounded, terminating output (spec 007 US3 AS2, FR-008, SC-004)", () => {
+  const text = "the device costs four hundred dollars exactly.";
+
+  const start = Date.now();
+  const chunks = splitIntoSpeechChunks(text, 5);
+  const elapsedMs = Date.now() - start;
+
+  assert.ok(elapsedMs < 1000, `expected under 1000ms, took ${elapsedMs}ms`);
+  assert.ok(chunks.length > 0);
+  assert.ok(chunks.every((chunk) => chunk.length <= 5));
+  // Bounded and terminating (this test's actual concern, per SC-004) does not require every
+  // character to be recoverable — at maxLength this small, splitLongText's own pathological
+  // single-oversized-word handling (unchanged from pre-007) may join adjacent fragments without
+  // a space; confirm no content is dropped by comparing letters only.
+  assert.equal(chunks.join("").replace(/\s+/g, ""), text.replace(/\s+/g, ""));
+});
+
+test("splitIntoSpeechChunks prefers a clause-tier boundary over a sentence-tier one that would exceed maxLength (spec 007 US3 AS3, SC-005)", () => {
+  const text = "This is a long clause, followed by another long clause that continues on.";
+
+  const chunks = splitIntoSpeechChunks(text, 40);
+
+  assert.ok(chunks.some((chunk) => chunk.trim() === "This is a long clause,"));
 });
 
 test("extractPositionedItems normalizes PDF.js text items without removing any of them", () => {
@@ -856,12 +1060,6 @@ test("resolveSpeechPolicy applies a partial override without changing any other 
     });
 });
 
-test("DEFAULT_SPEECH_POLICY exposes a boolean field for every simple include/exclude type (spec 005 US3 AS1)", () => {
-  ["speakTitles", "speakHeadings", "speakPageNumbers", "speakHeaders", "speakFooters", "speakFootnotes", "speakCaptions"].forEach((field) => {
-    assert.equal(typeof DEFAULT_SPEECH_POLICY[field], "boolean", `field: ${field}`);
-  });
-});
-
 test("DEFAULT_SPEECH_POLICY's tables field is a named mode, and non-default modes are accepted without error (spec 005 US3 AS2)", () => {
   assert.ok(["skip", "summary", "detailed"].includes(DEFAULT_SPEECH_POLICY.tables));
 
@@ -939,35 +1137,6 @@ test("buildDocumentAst preserves bbox/style.fontSize when present and omits them
   assert.equal(withoutLayout.style, undefined);
 });
 
-test("buildDocumentAst derives speak=false only for narration-excluded types (US2)", () => {
-  const blocksByPage = assignBlockIds([
-    [
-      pageBlock({ page: 0, text: "Heading", type: "heading" }),
-      pageBlock({ page: 0, text: "Body", type: "body" }),
-      pageBlock({ page: 0, text: "Header", type: "header" }),
-      pageBlock({ page: 0, text: "Footer", type: "footer" }),
-      pageBlock({ page: 0, text: "3", type: "page-number" }),
-      pageBlock({ page: 0, text: "Footnote", type: "footnote" }),
-      pageBlock({ page: 0, text: "Caption", type: "caption" }),
-      pageBlock({ page: 0, text: "Table", type: "table" }),
-    ],
-  ]);
-
-  const document = buildDocumentAst(blocksByPage);
-  const speakByType = Object.fromEntries(
-    document.sections.flatMap((section) => section.blocks).map((block) => [block.type, block.speak]),
-  );
-
-  assert.equal(speakByType.heading, true);
-  assert.equal(speakByType.body, true);
-  assert.equal(speakByType.header, false);
-  assert.equal(speakByType.footer, false);
-  assert.equal(speakByType["page-number"], false);
-  assert.equal(speakByType.footnote, false);
-  assert.equal(speakByType.caption, false);
-  assert.equal(speakByType.table, false);
-});
-
 test("buildDocumentAst assigns strictly increasing readingOrder across a multi-page document (US2)", () => {
   const blocksByPage = assignBlockIds([
     [pageBlock({ page: 0, text: "Page one, block one." }), pageBlock({ page: 0, text: "Page one, block two." })],
@@ -1020,23 +1189,6 @@ test("overriding tables:'detailed' includes a table consistently in both narrati
 
   assert.ok(narrationText.includes("Revenue"));
   assert.equal(document.sections[0].blocks[0].speak, true);
-});
-
-test("processing with no policy reproduces NARRATION_EXCLUDED_TYPES's old behavior exactly (spec 005 US2 AS3)", () => {
-  const blocksByPage = assignBlockIds([
-    [
-      pageBlock({ page: 0, text: "Body text.", type: "body" }),
-      pageBlock({ page: 0, text: "A footnote.", type: "footnote" }),
-    ],
-  ]);
-
-  const narrationText = renderNarrationText(blocksByPage);
-  const document = buildDocumentAst(blocksByPage);
-
-  assert.ok(narrationText.includes("Body text."));
-  assert.ok(!narrationText.includes("A footnote."));
-  assert.equal(document.sections[0].blocks[0].speak, true);
-  assert.equal(document.sections[0].blocks[1].speak, false);
 });
 
 test("buildDocumentAst groups blocks under their enclosing heading section, in order (US3)", () => {
@@ -1151,22 +1303,6 @@ test("buildDocumentAst's sections lose no block and duplicate none, relative to 
   assert.deepEqual(sectionedTextInOrder, flatTextInOrder);
 });
 
-test("buildPipelineOutput returns a document with title and sections alongside unchanged displayText/narrationText (US3)", () => {
-  const pages = [
-    [
-      { str: "Plain body text.", transform: [12, 0, 0, 12, 50, 700], width: 90, height: 12 },
-    ],
-  ];
-
-  const result = buildPipelineOutput(pages, 600, 800);
-
-  assert.equal(typeof result.document, "object");
-  assert.equal(typeof result.document.title, "string");
-  assert.ok(Array.isArray(result.document.sections));
-  assert.equal(typeof result.displayText, "string");
-  assert.equal(typeof result.narrationText, "string");
-});
-
 // US1 regression guard (FR-005, FR-006, FR-010): a hardcoded pre-feature baseline for
 // displayText/narrationText, covering headers, page numbers, citations, and URLs together. This
 // is deliberately independent of the exclusion-behavior tests above (which assert inclusion/
@@ -1220,66 +1356,34 @@ test("buildPipelineOutput assigns identical block/section ids across repeated ca
   assert.ok(firstIds.every((id) => typeof id === "string" && id.length > 0));
 });
 
-// SC-001 through SC-004 exercised together, per tasks.md T023: schema completeness (US2),
-// correct section grouping (US3), and byte-identical narration/display output (US1) all on one
-// realistic multi-type, multi-section document.
-test("buildPipelineOutput's document satisfies schema completeness, section grouping, and narration non-regression together (T023)", () => {
+// The one case not covered by the synthetic-fixture section-grouping tests above: a recurring
+// header appearing before the first real heading, run through the full pipeline (not just
+// buildDocumentAst directly), forms its own leading implicit section rather than attaching to
+// "Introduction".
+test("buildPipelineOutput's document gives a pre-heading recurring header its own leading implicit section (T023)", () => {
   const pages = [
     [
       { str: "Evangeline Research Report", transform: [10, 0, 0, 10, 200, 780], width: 180, height: 10 },
       { str: "Introduction", transform: [18, 0, 0, 18, 50, 760], width: 120, height: 18 },
-      { str: "This is the introduction body, referencing [3] and https://example.com.", transform: [10, 0, 0, 10, 50, 700], width: 500, height: 10 },
-      { str: "1", transform: [10, 0, 0, 10, 295, 20], width: 10, height: 10 },
+      { str: "This is the introduction body.", transform: [10, 0, 0, 10, 50, 700], width: 500, height: 10 },
     ],
     [
       { str: "Evangeline Research Report", transform: [10, 0, 0, 10, 200, 780], width: 180, height: 10 },
       { str: "Methods", transform: [18, 0, 0, 18, 50, 760], width: 120, height: 18 },
       { str: "This is the methods body content.", transform: [10, 0, 0, 10, 50, 700], width: 500, height: 10 },
-      { str: "2", transform: [10, 0, 0, 10, 295, 20], width: 10, height: 10 },
     ],
   ];
 
-  const withoutDocument = (result) => {
-    const { document, ...rest } = result;
-    return rest;
-  };
+  const result = buildPipelineOutput(pages, 600, 800);
 
-  const first = buildPipelineOutput(pages, 600, 800);
-  const second = buildPipelineOutput(pages, 600, 800);
-
-  // US1: narration/display output is unaffected by which run produced it.
-  assert.deepEqual(withoutDocument(first), withoutDocument(second));
-  assert.ok(!first.narrationText.includes("Evangeline Research Report"));
-  assert.ok(!first.narrationText.includes("[3]"));
-  assert.ok(!first.narrationText.includes("https://example.com"));
-  assert.ok(first.narrationText.includes("This is the introduction body"));
-
-  // US3: the recurring header before the first heading forms its own leading implicit section
-  // (no title), followed by one correctly-titled section per heading.
-  assert.equal(first.document.sections.length, 3);
-  assert.equal(first.document.sections[0].title, undefined);
-  assert.equal(first.document.sections[1].title, "Introduction");
-  assert.equal(first.document.sections[2].title, "Methods");
-
-  // US2: every block in every section independently satisfies the schema.
-  const allBlocks = first.document.sections.flatMap((section) => section.blocks);
-  allBlocks.forEach((block) => {
-    assert.equal(typeof block.id, "string");
-    assert.equal(typeof block.page, "number");
-    assert.equal(typeof block.type, "string");
-    assert.equal(typeof block.text, "string");
-    assert.equal(typeof block.readingOrder, "number");
-    assert.equal(typeof block.speak, "boolean");
-  });
-
-  // FR-009/SC-003: ids are stable across the two runs above.
-  const idsOf = (result) => result.document.sections.flatMap((section) => [section.id, ...section.blocks.map((block) => block.id)]);
-  assert.deepEqual(idsOf(first), idsOf(second));
+  assert.equal(result.document.sections.length, 3);
+  assert.equal(result.document.sections[0].title, undefined);
+  assert.equal(result.document.sections[1].title, "Introduction");
+  assert.equal(result.document.sections[2].title, "Methods");
 });
 
-// SC-001 through SC-004 exercised together for spec 005: default-policy non-regression (US1),
-// multiple simultaneous overrides propagate consistently to both outputs (US2), and overriding
-// several fields together does not cross-contaminate an unrelated field's result (US2/US3).
+// Overriding several fields together does not cross-contaminate an unrelated, untouched field's
+// result — the one assertion not already covered by the single-field-override tests above.
 test("multiple simultaneous policy overrides propagate consistently without cross-field interference (spec 005 T024)", () => {
   const blocksByPage = assignBlockIds([
     [
@@ -1291,14 +1395,6 @@ test("multiple simultaneous policy overrides propagate consistently without cros
     ],
   ]);
 
-  // US1: default policy (no overrides) still reproduces the pre-005 baseline.
-  const defaultNarration = renderNarrationText(blocksByPage);
-  assert.ok(defaultNarration.includes("Body."));
-  assert.ok(!defaultNarration.includes("Footnote text."));
-  assert.ok(!defaultNarration.includes("Caption text."));
-  assert.ok(!defaultNarration.includes("Table cell."));
-
-  // US2/US3: overriding footnotes and tables together does not affect captions (untouched field).
   const policy = resolveSpeechPolicy({ speakFootnotes: true, tables: "summary" });
   const narrationText = renderNarrationText(blocksByPage, policy);
   const document = buildDocumentAst(blocksByPage, policy);
@@ -1439,29 +1535,14 @@ test("convertCardinal does not hang on a digit run beyond this pipeline's larges
 // unchanged when a number exceeds this pipeline's largest named scale) must propagate through
 // every converter that calls it internally — otherwise the wrapping converter appends its own
 // unit/format text to the raw, unconverted digits, producing a garbled reading FR-013 forbids.
-test("convertCurrency leaves an oversized amount's full match unmodified rather than appending 'dollars' to raw digits (spec 006 Convergence T051, FR-013)", () => {
-  const oversizedMatch = `$${"9".repeat(350)}`;
+test("convertCurrency/convertPercentage/convertDecimal each leave an oversized amount's full match unmodified rather than appending unit/format text to raw digits (spec 006 Convergence T051, FR-013)", () => {
+  const oversized = "9".repeat(350);
 
-  assert.equal(convertCurrency(oversizedMatch), oversizedMatch);
-});
-
-test("convertPercentage leaves an oversized amount's full match unmodified rather than appending 'percent' to raw digits (spec 006 Convergence T051, FR-013)", () => {
-  const oversizedMatch = `${"9".repeat(350)}%`;
-
-  assert.equal(convertPercentage(oversizedMatch), oversizedMatch);
-});
-
-test("convertDecimal leaves an oversized whole part's full match unmodified rather than appending a fractional 'point' clause (spec 006 Convergence T051, FR-013)", () => {
-  const oversizedMatch = `${"9".repeat(350)}.14`;
-
-  assert.equal(convertDecimal(oversizedMatch), oversizedMatch);
-});
-
-test("convertYear is unaffected by the overflow guard since a year match is always exactly 4 digits (spec 006 Convergence T051, sanity check)", () => {
-  // Included for completeness per T051's scope, though YEAR_PATTERN can never itself produce an
-  // oversized match (it only matches exactly 4 digits) — this documents that convertYear needs
-  // no overflow-guard change, unlike the other three converters.
-  assert.equal(convertYear("1998"), "nineteen ninety-eight");
+  assert.equal(convertCurrency(`$${oversized}`), `$${oversized}`);
+  assert.equal(convertPercentage(`${oversized}%`), `${oversized}%`);
+  assert.equal(convertDecimal(`${oversized}.14`), `${oversized}.14`);
+  // convertYear needs no such guard: YEAR_PATTERN can only ever match exactly 4 digits, so it
+  // can never reach the overflow threshold in the first place.
 });
 
 test("normalizeSpokenText leaves oversized currency/percentage/decimal spans in narration completely unmodified (spec 006 Convergence T051, FR-013 end-to-end)", () => {

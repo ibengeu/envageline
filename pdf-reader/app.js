@@ -970,6 +970,226 @@
     return normalizeSpokenText(stripCitationsAndUrls(joinedText));
   }
 
+  // research.md Decision 2, spec.md Assumptions: a fixed, non-extensible abbreviation list.
+  const PROTECTED_ABBREVIATIONS = ["Dr.", "Mr.", "Mrs.", "Prof.", "vs.", "approx.", "etc.", "e.g.", "i.e.", "St.", "Jr.", "Sr."];
+
+  function isProtectedAbbreviationPeriod(text, position) {
+    if (position >= text.length) return false;
+    return PROTECTED_ABBREVIATIONS.some((abbreviation) => text.slice(0, position).endsWith(abbreviation));
+  }
+
+  const RAW_DECIMAL_PATTERN = /\d+\.\d+/g;
+
+  // True when `position` falls strictly inside a raw digit.digit decimal number (e.g. "3.14")
+  // — a raw decimal that could still reach the chunker unconverted (FR-003's defensive
+  // requirement). Protects the whole matched span, not just the position of the "." itself.
+  const NUMBER_WORD_RUN_PATTERN = /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|trillion|point|and)(?:[\s-]+(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|trillion|point|and))*\b/gi;
+
+  function isProtectedDecimal(text, position) {
+    const rawRegex = new RegExp(RAW_DECIMAL_PATTERN.source, RAW_DECIMAL_PATTERN.flags);
+    let match;
+    while ((match = rawRegex.exec(text)) !== null) {
+      if (position > match.index && position < match.index + match[0].length) return true;
+    }
+
+    // Spoken-form decimal: a number-word run containing "point" (e.g. "three point one four")
+    // — the same NUMBER_WORD_RUN_PATTERN used by currency-phrase detection, applied standalone
+    // since a spoken decimal need not be adjacent to a currency unit noun.
+    const wordRunRegex = new RegExp(NUMBER_WORD_RUN_PATTERN.source, NUMBER_WORD_RUN_PATTERN.flags);
+    while ((match = wordRunRegex.exec(text)) !== null) {
+      if (!/\bpoint\b/i.test(match[0])) continue;
+      if (position > match.index && position < match.index + match[0].length) return true;
+    }
+    return false;
+  }
+
+  const CURRENCY_UNIT_NOUN_PATTERN = /\b(?:dollars?|pounds?|euros?|cents?)\b/gi;
+
+  // True when `position` falls inside a spoken currency phrase: a number-word run immediately
+  // before a currency unit noun (dollar/dollars/pound/pounds/euro/euros), or within the
+  // "<number> and <number> cent(s)" cents clause (FR-004). Scans for the unit noun, then extends
+  // the protected range backward to include the number-word run (and any "and ... cents" clause)
+  // immediately preceding it.
+  function isProtectedCurrencyPhrase(text, position) {
+    const unitNounRegex = new RegExp(CURRENCY_UNIT_NOUN_PATTERN.source, CURRENCY_UNIT_NOUN_PATTERN.flags);
+    let match;
+    while ((match = unitNounRegex.exec(text)) !== null) {
+      const numberRunRegex = new RegExp(NUMBER_WORD_RUN_PATTERN.source, NUMBER_WORD_RUN_PATTERN.flags);
+      let numberMatch;
+      let rangeStart = match.index;
+      while ((numberMatch = numberRunRegex.exec(text)) !== null) {
+        const gapText = text.slice(numberMatch.index + numberMatch[0].length, match.index);
+        if (/^\s*$/.test(gapText)) rangeStart = Math.min(rangeStart, numberMatch.index);
+      }
+      const rangeEnd = match.index + match[0].length;
+      if (position > rangeStart && position < rangeEnd) return true;
+    }
+    return false;
+  }
+
+  const ORDINAL_WORD_ENDING_PATTERN = /\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|\w+ieth|\w+th)\b/gi;
+
+  // True when `position` falls inside a spoken ordinal word run (e.g. "twenty-first") — a
+  // hyphen-joined word run ending in an ordinal word, or the ordinal word alone (FR-005).
+  function isProtectedOrdinal(text, position) {
+    const ordinalRegex = new RegExp(ORDINAL_WORD_ENDING_PATTERN.source, ORDINAL_WORD_ENDING_PATTERN.flags);
+    let match;
+    while ((match = ordinalRegex.exec(text)) !== null) {
+      const precedingWordRun = text.slice(0, match.index).match(/[A-Za-z]+-$/);
+      const rangeStart = precedingWordRun ? match.index - precedingWordRun[0].length : match.index;
+      const rangeEnd = match.index + match[0].length;
+      if (position > rangeStart && position < rangeEnd) return true;
+    }
+    return false;
+  }
+
+  const YEAR_WORD_PHRASE_PATTERN = /\b(?:nineteen|twenty)[\s-]+(?:oh[\s-]+\w+|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty(?:-\w+)?|thirty(?:-\w+)?|forty(?:-\w+)?|fifty(?:-\w+)?|sixty(?:-\w+)?|seventy(?:-\w+)?|eighty(?:-\w+)?|ninety(?:-\w+)?)\b|\btwo thousand(?:[\s-]+\w+)?\b/gi;
+
+  // True when `position` falls inside a spoken year phrase (e.g. "twenty twenty-four", "two
+  // thousand five") — the two-part year-shaped word run spec 006's convertYear produces (FR-005).
+  function isProtectedYearPhrase(text, position) {
+    const yearRegex = new RegExp(YEAR_WORD_PHRASE_PATTERN.source, YEAR_WORD_PHRASE_PATTERN.flags);
+    let match;
+    while ((match = yearRegex.exec(text)) !== null) {
+      if (position > match.index && position < match.index + match[0].length) return true;
+    }
+    return false;
+  }
+
+  // Single dispatch point for all protected-span detectors (research.md Decision 2).
+  function isProtectedPosition(text, position) {
+    return (
+      isProtectedAbbreviationPeriod(text, position)
+      || isProtectedDecimal(text, position)
+      || isProtectedCurrencyPhrase(text, position)
+      || isProtectedOrdinal(text, position)
+      || isProtectedYearPhrase(text, position)
+    );
+  }
+
+  // research.md Decision 1 (revised): each tier's regex identifies where that tier's boundary
+  // falls; the boundary "position" is the offset right after the punctuation/whitespace run, so
+  // splitting at it never drops or duplicates a character. Bounded, non-nested quantifiers only
+  // (research.md's Security Review commitment, mirroring spec 006's Decision 4).
+  const BOUNDARY_PATTERNS = {
+    paragraph: /\n\n/g,
+    sentence: /[.!?]+["')\]]*\s+(?=\S)/g,
+    clause: /[,;]\s+(?=\S)/g,
+    plain: /[:\-–—]\s+(?=\S)/g,
+  };
+
+  function findBoundaryCandidates(text, tier) {
+    const pattern = BOUNDARY_PATTERNS[tier];
+    const regex = new RegExp(pattern.source, pattern.flags);
+    const candidates = [];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const position = match.index + match[0].length;
+      // Protection is checked right after the punctuation mark itself (match.index + 1), not
+      // at the boundary position (which is after any trailing whitespace) — an abbreviation
+      // period is exactly one character, so this is where isProtectedAbbreviationPeriod expects
+      // "further text" to begin.
+      if (isProtectedPosition(text, match.index + 1)) continue;
+      candidates.push({ position, tier });
+    }
+    return candidates;
+  }
+
+  // Tiers this pipeline always splits at unconditionally, regardless of length — this is the
+  // pre-007 chunker's own granularity (it always split into sentences, never merging adjacent
+  // short ones; verified directly against "First passage. Second passage." producing two
+  // chunks). Clause/plain are used only conditionally, as fallbacks for a piece that is still
+  // too long after unconditional splitting (research.md Decision 1, revised).
+  const UNCONDITIONAL_TIERS = ["paragraph", "sentence"];
+  const CONDITIONAL_TIERS = ["clause", "plain"];
+  const TIER_ORDER = [...UNCONDITIONAL_TIERS, ...CONDITIONAL_TIERS];
+
+  // research.md Decision 3's true last resort, reached only when no punctuation-based tier
+  // (paragraph/sentence/clause/plain) can further split an oversized piece. Unlike the
+  // unmodified splitLongText (used only for the pathological single-unsplittable-word/protected-
+  // span case), this greedily packs whole words up to maxLength while still respecting
+  // protected-span boundaries — this is what keeps a long punctuation-free passage containing a
+  // protected phrase (e.g. "...is three point one four in...") from being split mid-phrase by a
+  // naive word-by-word wrap that knows nothing about protection.
+  function packWordsRespectingProtection(text, maxLength) {
+    const words = text.split(/\s+/).filter(Boolean);
+    const chunks = [];
+    let current = "";
+    let cursorInText = 0;
+
+    words.forEach((word) => {
+      const wordStart = text.indexOf(word, cursorInText);
+      cursorInText = wordStart + word.length;
+
+      // A single word longer than maxLength on its own can't be packed at all — split it
+      // character-by-character, matching splitLongText's own handling of this pathological case
+      // (Security Review/FR-008: this is what guarantees termination and a bounded chunk size
+      // even for a single unsplittable, unpunctuated run).
+      if (word.length > maxLength) {
+        if (current) {
+          chunks.push(current);
+          current = "";
+        }
+        for (let index = 0; index < word.length; index += maxLength) {
+          chunks.push(word.slice(index, index + maxLength));
+        }
+        return;
+      }
+
+      const candidate = current ? `${current} ${word}` : word;
+      const boundaryIsProtected = current && isProtectedPosition(text, wordStart);
+
+      if (candidate.length > maxLength && current && !boundaryIsProtected) {
+        chunks.push(current);
+        current = word;
+      } else {
+        current = candidate;
+      }
+    });
+
+    if (current) chunks.push(current);
+    return chunks;
+  }
+
+  function splitAtTierUnconditionally(text, tier) {
+    const candidates = findBoundaryCandidates(text, tier);
+    if (!candidates.length) return [text];
+
+    const pieces = [];
+    let cursor = 0;
+    candidates.forEach((candidate) => {
+      pieces.push(text.slice(cursor, candidate.position).trim());
+      cursor = candidate.position;
+    });
+    pieces.push(text.slice(cursor).trim());
+    return pieces.filter(Boolean);
+  }
+
+  // research.md Decision 1 (revised): paragraph and sentence tiers always split (matching the
+  // pre-007 chunker's granularity, per FR-009); a resulting piece that is still too long then
+  // descends through clause and plain-punctuation tiers only as needed, finally falling back to
+  // the existing, already-terminating splitLongText. No tier ever merges pieces back together.
+  function splitByTier(text, tier, maxLength) {
+    const tierIndex = TIER_ORDER.indexOf(tier);
+    const nextTier = TIER_ORDER[tierIndex + 1];
+    const descend = (piece) => (nextTier ? splitByTier(piece, nextTier, maxLength) : packWordsRespectingProtection(piece, maxLength));
+    const descendUnconditionally = (piece) => (nextTier ? splitByTier(piece, nextTier, maxLength) : [piece]);
+
+    if (UNCONDITIONAL_TIERS.includes(tier)) {
+      const pieces = splitAtTierUnconditionally(text, tier);
+      const isNextTierUnconditional = nextTier && UNCONDITIONAL_TIERS.includes(nextTier);
+      return pieces.flatMap((piece) => {
+        if (isNextTierUnconditional) return descendUnconditionally(piece);
+        return piece.length <= maxLength ? [piece] : descend(piece);
+      });
+    }
+
+    if (text.length <= maxLength) return [text];
+    const pieces = splitAtTierUnconditionally(text, tier);
+    if (pieces.length === 1) return descend(text);
+    return pieces.flatMap((piece) => (piece.length <= maxLength ? [piece] : descend(piece)));
+  }
+
   function splitLongText(text, maxLength) {
     const words = text.split(/\s+/).filter(Boolean);
     const chunks = [];
@@ -1004,18 +1224,7 @@
     const normalized = normalizePdfText(text);
     if (!normalized) return [];
 
-    const sentences = normalized.match(/[^.!?]+[.!?]+["')\]]*|[^.!?]+$/g) || [normalized];
-    const chunks = [];
-
-    for (const sentence of sentences.map((value) => value.trim()).filter(Boolean)) {
-      if (sentence.length > maxLength) {
-        chunks.push(...splitLongText(sentence, maxLength));
-      } else {
-        chunks.push(sentence);
-      }
-    }
-
-    return chunks;
+    return splitByTier(normalized, "paragraph", maxLength);
   }
 
   function normalizedWordSet(text) {
@@ -1202,6 +1411,13 @@
     convertPercentage,
     convertDecimal,
     convertOrdinal,
+    findBoundaryCandidates,
+    splitByTier,
+    isProtectedAbbreviationPeriod,
+    isProtectedDecimal,
+    isProtectedCurrencyPhrase,
+    isProtectedOrdinal,
+    isProtectedYearPhrase,
   };
 
   if (typeof module !== "undefined" && module.exports) {
