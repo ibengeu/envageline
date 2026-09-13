@@ -1380,6 +1380,57 @@
     return buildResult(hasRealWorkerResult);
   }
 
+  // TTSEngine contract (spec 008): any object exposing
+  // `async synthesize(text, { voice, speed, endpoint }) -> { blob, synthesisMs }` satisfies it.
+  // The pipeline's audio-consuming code (localChunkPromise) depends only on this shape, never on
+  // Kokoro-specific request/response details — see data-model.md for the full contract. Declared
+  // before the `const api = {...}`/Node-early-return boundary below (unlike most DOM-adjacent
+  // code in this file) because `defaultTtsEngine` must exist for the exported getter to work
+  // when this module is `require()`d under Node, which returns before the rest of the file runs.
+  function createKokoroTtsEngine() {
+    async function synthesize(text, options, attempt = 0) {
+      try {
+        const endpoints = localTtsEndpoints(options.endpoint, "speech");
+        let lastResponse = null;
+        for (const ttsEndpoint of endpoints) {
+          const t0 = Date.now();
+          lastResponse = await globalScope.fetch(ttsEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              input: text,
+              voice: options.voice || "af_heart",
+              response_format: "wav",
+              speed: options.speed,
+            }),
+          });
+          if (lastResponse.ok) {
+            const blob = await lastResponse.blob();
+            return { blob, synthesisMs: Date.now() - t0 };
+          }
+        }
+        throw new Error("Local TTS request failed.");
+      } catch (error) {
+        if (attempt >= 2) throw error;
+        await waitForRetryDelay(attempt);
+        return synthesize(text, options, attempt + 1);
+      }
+    }
+
+    return { synthesize };
+  }
+
+  let defaultTtsEngine = createKokoroTtsEngine();
+
+  // Test-only substitution hook (spec 008, FR-011/SC-003): reassigns the module-internal engine
+  // localChunkPromise reads live from this closure. A CommonJS export of `defaultTtsEngine`
+  // itself would only copy the reference at require-time, not stay live — this setter is what
+  // makes a test double actually reach the real playback path, not just prove callable in
+  // isolation.
+  function setTtsEngine(engine) {
+    defaultTtsEngine = engine;
+  }
+
   const api = {
     normalizePdfText,
     splitIntoSpeechChunks,
@@ -1418,6 +1469,11 @@
     isProtectedCurrencyPhrase,
     isProtectedOrdinal,
     isProtectedYearPhrase,
+    createKokoroTtsEngine,
+    setTtsEngine,
+    get defaultTtsEngine() {
+      return defaultTtsEngine;
+    },
   };
 
   if (typeof module !== "undefined" && module.exports) {
@@ -1912,36 +1968,6 @@
     });
   }
 
-  async function fetchLocalAudioBlob(endpoint, chunkText, attempt = 0) {
-    try {
-      const endpoints = localTtsEndpoints(endpoint, "speech");
-      let lastResponse = null;
-      for (const ttsEndpoint of endpoints) {
-        const t0 = Date.now();
-        lastResponse = await globalScope.fetch(ttsEndpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            input: chunkText,
-            voice: elements.voice.value.trim() || "af_heart",
-            response_format: "wav",
-            speed: Number(elements.rate.value),
-          }),
-        });
-        if (lastResponse.ok) {
-          const blob = await lastResponse.blob();
-          ewma.record(Date.now() - t0);
-          return blob;
-        }
-      }
-      throw new Error("Local TTS request failed.");
-    } catch (error) {
-      if (attempt >= 2) throw error;
-      await waitForRetryDelay(attempt);
-      return fetchLocalAudioBlob(endpoint, chunkText, attempt + 1);
-    }
-  }
-
   function localChunkPromise(index) {
     if (index < 0 || index >= state.chunks.length) return Promise.resolve(null);
     if (state.localAudioCache.has(index)) return state.localAudioCache.get(index);
@@ -1955,9 +1981,10 @@
       const cached = await ttsCache.get(cacheKey);
       if (cached) return cached;
 
-      const blob = await fetchLocalAudioBlob(endpoint, chunkText);
-      ttsCache.put(cacheKey, blob).catch(() => {});
-      return blob;
+      const result = await defaultTtsEngine.synthesize(chunkText, { voice, speed, endpoint });
+      if (result.synthesisMs !== undefined) ewma.record(result.synthesisMs);
+      ttsCache.put(cacheKey, result.blob).catch(() => {});
+      return result.blob;
     });
 
     state.localAudioCache.set(index, promise);

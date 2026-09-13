@@ -40,7 +40,17 @@ const {
   isProtectedCurrencyPhrase,
   isProtectedOrdinal,
   isProtectedYearPhrase,
+  createKokoroTtsEngine,
+  setTtsEngine,
 } = require("./app.js");
+
+// `defaultTtsEngine` is exposed as a live getter (app.js reassigns the underlying binding via
+// setTtsEngine) — destructuring it here would freeze a one-time snapshot instead of tracking
+// reassignment, so it's read fresh through the module object wherever the current value matters.
+const appModule = require("./app.js");
+function getDefaultTtsEngine() {
+  return appModule.defaultTtsEngine;
+}
 
 function pageBlock(overrides) {
   return {
@@ -3620,6 +3630,70 @@ test("local TTS playback errors during active playback attempt to reconnect rath
     assert.equal(app.elements.textOutput.textContent, "Read this sentence.");
   } finally {
     app.restore();
+  }
+});
+
+test("createKokoroTtsEngine returns an object with a synthesize function (spec 008 US2, FR-001)", () => {
+  const engine = createKokoroTtsEngine();
+
+  assert.equal(typeof engine.synthesize, "function");
+});
+
+test("defaultTtsEngine is a synthesize-capable engine, confirming it is wired as the module default (spec 008 US2, FR-004)", () => {
+  assert.equal(typeof getDefaultTtsEngine().synthesize, "function");
+});
+
+// FR-006: loopback-only validation lives at the playback-initiation call site (unchanged by
+// this feature, confirmed against the pre-008 code directly), not inside synthesize itself —
+// synthesize performed no endpoint-trust check before this refactor and must not gain one now,
+// since that would be a real behavior change this explicitly zero-behavior-change spec forbids.
+// This test instead confirms synthesize still requests exactly the endpoint it's given, proving
+// the abstraction didn't silently add or drop endpoint handling.
+test("KokoroTtsEngine.synthesize requests exactly the endpoint it is given (spec 008 US2, FR-002)", async () => {
+  const originalFetch = global.fetch;
+  const requestedUrls = [];
+  global.fetch = async (url) => { requestedUrls.push(url); return { ok: true, blob: async () => new Blob() }; };
+
+  try {
+    const engine = createKokoroTtsEngine();
+    await engine.synthesize("hello", { endpoint: "http://localhost:8880/v1/audio/speech", voice: "af_heart", speed: 1 });
+    assert.ok(requestedUrls.includes("http://localhost:8880/v1/audio/speech"));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("KokoroTtsEngine.synthesize resolves to an AudioResult carrying the fetched blob (spec 008 US2, FR-005)", async () => {
+  const originalFetch = global.fetch;
+  const expectedBlob = new Blob(["audio"], { type: "audio/wav" });
+  global.fetch = async () => ({ ok: true, blob: async () => expectedBlob });
+
+  try {
+    const engine = createKokoroTtsEngine();
+    const result = await engine.synthesize("hello", { endpoint: "/v1/audio/speech", voice: "af_heart", speed: 1 });
+    assert.equal(result.blob, expectedBlob);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+// FR-011/SC-003: `setTtsEngine` reassigns the same module-level `defaultTtsEngine` binding
+// `localChunkPromise` reads from (both operate on the top-level `require("./app.js")` instance
+// this test file itself imported, since this test does not go through loadBrowserApp's
+// cache-busting re-require) — this is what genuinely proves substitutability reaches the real
+// audio-consuming code path, not just that a test double is independently callable.
+test("a minimal Kokoro-agnostic test double can substitute for the module's live default engine (spec 008 US2, FR-011, SC-003)", async () => {
+  const fakeBlob = new Blob(["fake audio"], { type: "audio/wav" });
+  const testDouble = { synthesize: async () => ({ blob: fakeBlob }) };
+
+  try {
+    setTtsEngine(testDouble);
+
+    assert.equal(getDefaultTtsEngine(), testDouble);
+    const result = await getDefaultTtsEngine().synthesize("any text", { voice: "af_heart", speed: 1, endpoint: "/v1/audio/speech" });
+    assert.equal(result.blob, fakeBlob);
+  } finally {
+    setTtsEngine(createKokoroTtsEngine());
   }
 });
 
