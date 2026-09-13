@@ -2177,9 +2177,54 @@
     return String(text || "").split(/\n\n/).filter(hasVisibleText);
   }
 
+  // Which chunk's passage to highlight while a chunk's audio is still being synthesised.
+  //
+  // The pane is rendered before synthesis so it is never blank and a click-to-seek lights up
+  // instantly, but it must show the passage being *read*, not the one being fetched. Synthesis
+  // costs over a second, so highlighting the incoming chunk here is what put the highlight ahead
+  // of the voice. When a previous chunk has already played, its passage stays highlighted until
+  // this chunk's audio actually starts; on first play and on seek there is no previous chunk, so
+  // the incoming chunk's own passage is highlighted immediately.
+  function chunkToHighlightBeforeSynthesis(incomingChunkIndex) {
+    const hasPlayedBefore = Boolean(state.audioUrl) && incomingChunkIndex > 0;
+    return hasPlayedBefore ? incomingChunkIndex - 1 : incomingChunkIndex;
+  }
+
+  // Which passage is being read right now, given the chunk currently being narrated.
+  //
+  // A passage records only the chunk it *starts* at, so a passage covers every chunk from its own
+  // start until the next passage's start. Comparing a passage's start against the active chunk for
+  // equality therefore lights a long paragraph only while its first chunk plays and leaves it dark
+  // for the rest — measured at 4 dark chunks of 7 on a 1400-character paragraph.
+  //
+  // Deliberately a scan rather than a derived range `[start[i], start[i+1])`. The mapping is built
+  // by similarity scoring for documents with no reconstructed block structure, and that carries no
+  // ordering guarantee: duplicate passages were measured to map [0,1,0]. A range derivation there
+  // produces [1,0) — empty — leaving that passage permanently unhighlightable. A scan yields
+  // exactly one winner whatever the ordering.
+  //
+  // Ties matter: merging packs short passages into one chunk, so several can share a start
+  // (measured [0,1,1,1,1]). The *first* of the tied passages is chosen, because narration of that
+  // chunk begins with its text — picking the last would point several rows ahead of the voice.
+  function activePassageIndex(startIndexByPassage, activeChunkIndex) {
+    if (!Number.isInteger(activeChunkIndex) || activeChunkIndex < 0) return -1;
+
+    let bestStart = -1;
+    let bestPassage = -1;
+    startIndexByPassage.forEach((start, passage) => {
+      if (!Number.isInteger(start) || start > activeChunkIndex) return;
+      // Strictly greater keeps the first passage among ties.
+      if (start > bestStart) {
+        bestStart = start;
+        bestPassage = passage;
+      }
+    });
+    return bestPassage;
+  }
+
   // One clickable passage button. A passage with no mapped chunk is rendered disabled rather than
   // omitted, so the reading pane always shows the document's full text.
-  function buildPassageButton(doc, paragraph, chunkIndex, activeIndex) {
+  function buildPassageButton(doc, paragraph, chunkIndex, isActive) {
     const block = doc.createElement("button");
     block.type = "button";
     block.className = "literal-paragraph";
@@ -2192,7 +2237,7 @@
 
     block.setAttribute("data-chunk-index", String(chunkIndex));
     block.setAttribute("aria-label", "Start reading near this passage");
-    if (chunkIndex === activeIndex) {
+    if (isActive) {
       block.className = "literal-paragraph is-active";
       block.setAttribute("aria-current", "true");
     }
@@ -2216,10 +2261,17 @@
       state.paragraphChunkMap = mapParagraphsToChunks(paragraphs, state.chunks);
     }
 
+    const activePassage = activePassageIndex(state.paragraphChunkMap, activeIndex);
+
     let activeBlock = null;
     const paragraphBlocks = paragraphs.map((paragraph, index) => {
-      const block = buildPassageButton(doc, paragraph, state.paragraphChunkMap[index], activeIndex);
-      if (block.className === "literal-paragraph is-active") activeBlock = block;
+      const block = buildPassageButton(
+        doc,
+        paragraph,
+        state.paragraphChunkMap[index],
+        index === activePassage,
+      );
+      if (index === activePassage) activeBlock = block;
       return block;
     });
 
@@ -2917,7 +2969,7 @@
       return;
     }
 
-    renderPlaybackText(state.chunkIndex);
+    renderPlaybackText(chunkToHighlightBeforeSynthesis(playbackIndex));
     setStatus(`Reading ${state.chunkIndex + 1} of ${state.chunks.length}...`);
     updateButtons();
 
@@ -2962,6 +3014,12 @@
       };
       state.playbackActive = true;
       await state.audio.play();
+      // The highlight advances here, not at the top of this function: synthesis costs ~1.55s plus
+      // ~0.0143s/char, so rendering before the await moved the highlight onto a passage well over a
+      // second before its audio began. The earlier render is kept — it keeps a passage highlighted
+      // while the next chunk is being prepared, and is what makes a click-to-seek light up
+      // immediately — but it renders the passage being read, not the one being fetched.
+      renderPlaybackText(state.chunkIndex);
       updateButtons();
     } catch (error) {
       failPlayback(error.message || "Local TTS request failed.");

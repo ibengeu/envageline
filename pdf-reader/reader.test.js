@@ -3996,6 +3996,263 @@ test("the reader renders one clickable passage per structural block, not per bla
   }
 });
 
+// --- Spec 011: highlight and narration synchronisation ---
+//
+// Builds a document whose middle paragraph is long enough to be narrated in several parts, plays
+// it, and advances playback chunk by chunk. Shared by the US1 tests below.
+function createLongParagraphApp(paragraphChars = 1400) {
+  const para = ("The executive who wants to win must understand that preparation beats talent. ")
+    .repeat(40).slice(0, paragraphChars).trim();
+  return loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPositionedPdf([
+      { text: "Chapter One", fontSize: 20, y: 760 },
+      { text: para, y: 600 },
+      { text: "A closing note.", y: 200 },
+    ])),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+}
+
+function activePassages(app) {
+  return app.elements.textOutput.children.filter(
+    (node) => node.className === "literal-paragraph is-active",
+  );
+}
+
+// Spec 011 US1 (FR-001): a passage is marked active only when the playing chunk equals the
+// passage's FIRST chunk, so a paragraph narrated in several parts lights up for the first part
+// and then goes dark while its own remaining text is still being read. Measured end to end: a
+// 1400-character paragraph maps [0,1,6] over 7 chunks, leaving 4 with nothing highlighted.
+test("a paragraph narrated in several parts stays highlighted throughout (spec 011 US1)", async () => {
+  const app = createLongParagraphApp(1400);
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", { target: { files: [createFile("long.pdf")] } });
+
+    await app.trigger("play", "click");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Chunk 0 is the heading. Advance into the long paragraph, then one chunk further — still
+    // inside the same paragraph, which is where the highlight currently goes dark.
+    app.window.lastAudio.onended();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const atFirstPart = activePassages(app).map((node) => node.textContent);
+
+    app.window.lastAudio.onended();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const atSecondPart = activePassages(app).map((node) => node.textContent);
+
+    assert.deepEqual(
+      atSecondPart,
+      atFirstPart,
+      "expected the same paragraph to stay highlighted while its later parts are read",
+    );
+  } finally {
+    app.restore();
+  }
+});
+
+// Spec 011 US1 (FR-003): the direct expression of "the highlight never goes dark" — at every
+// chunk of a multi-chunk document some passage must carry the active marker.
+test("some passage is highlighted at every chunk of a document (spec 011 US1)", async () => {
+  const app = createLongParagraphApp(1400);
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", { target: { files: [createFile("long.pdf")] } });
+
+    await app.trigger("play", "click");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const dark = [];
+    for (let chunk = 0; chunk < 7; chunk += 1) {
+      if (activePassages(app).length === 0) dark.push(chunk);
+      if (!app.window.lastAudio) break;
+      app.window.lastAudio.onended();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    assert.deepEqual(dark, [], `expected no chunk to leave the pane unhighlighted, dark at ${dark}`);
+  } finally {
+    app.restore();
+  }
+});
+
+// Spec 011 US2 (FR-002): short passages merge into one chunk, and every passage sharing that
+// chunk is marked active at once. Measured: five short passages map [0,1,1,1,1], marking four
+// simultaneously.
+test("exactly one passage is highlighted when several share a chunk (spec 011 US2)", async () => {
+  const app = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPositionedPdf([
+      { text: "One.", y: 700 }, { text: "Two.", y: 620 }, { text: "Three.", y: 540 },
+      { text: "Four.", y: 460 }, { text: "Five.", y: 380 },
+    ])),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", { target: { files: [createFile("shorts.pdf")] } });
+
+    await app.trigger("play", "click");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    app.window.lastAudio.onended();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(activePassages(app).length, 1, "expected exactly one passage to be highlighted");
+  } finally {
+    app.restore();
+  }
+});
+
+// Spec 011 US2 (FR-004): the tie-break. A naive "last passage at or before the active chunk"
+// passes the test above while highlighting a passage several rows ahead of the words being
+// spoken — with map [0,1,1,1,1] at chunk 1 it selects "Five." rather than "Two.". Only this
+// test distinguishes the two rules.
+test("the first of several passages sharing a chunk is the highlighted one (spec 011 US2)", async () => {
+  const app = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPositionedPdf([
+      { text: "One.", y: 700 }, { text: "Two.", y: 620 }, { text: "Three.", y: 540 },
+      { text: "Four.", y: 460 }, { text: "Five.", y: 380 },
+    ])),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", { target: { files: [createFile("shorts.pdf")] } });
+
+    await app.trigger("play", "click");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    app.window.lastAudio.onended();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.deepEqual(
+      activePassages(app).map((node) => node.textContent),
+      ["Two."],
+      "expected the first passage of the merged chunk, not a later one",
+    );
+  } finally {
+    app.restore();
+  }
+});
+
+// Spec 011 US3 (FR-003, FR-005): the highlight moves when narration audio is REQUESTED rather
+// than when it begins playing. Both halves are asserted in one test because they are the two
+// sides of the same tension — a fix that satisfies one by sacrificing the other is not a fix.
+test("the highlight waits for audio to start and never leaves the pane blank (spec 011 US3)", async () => {
+  const gate = deferred();
+  let speechCalls = 0;
+  const app = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPositionedPdf([
+      { text: "The first paragraph of the document.", y: 700 },
+      { text: "The second paragraph of the document.", y: 600 },
+    ])),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      speechCalls += 1;
+      if (speechCalls === 1) {
+        return { ok: true, async blob() { return new Blob(["audio-1"], { type: "audio/wav" }); } };
+      }
+      return gate.promise;
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", { target: { files: [createFile("two.pdf")] } });
+
+    await app.trigger("play", "click");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Finish the first paragraph. The second paragraph's audio is gated, so it cannot have
+    // started — yet the highlight currently advances onto it immediately.
+    app.window.lastAudio.onended();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const active = activePassages(app).map((node) => node.textContent);
+    assert.equal(active.length, 1, "expected a passage to remain highlighted while audio is pending");
+    assert.deepEqual(
+      active,
+      ["The first paragraph of the document."],
+      "expected the highlight not to advance before the next passage's audio begins",
+    );
+  } finally {
+    gate.resolve({ ok: true, async blob() { return new Blob(["audio-2"], { type: "audio/wav" }); } });
+    app.restore();
+  }
+});
+
+// Spec 011 FR-012 / OWASP A08: on the fallback mapping path the passage-to-chunk map is built by
+// similarity scoring and carries no ordering guarantee — duplicate passages were measured to map
+// [0,1,0]. A range-based implementation derives [1,0) for the middle passage, an empty range that
+// leaves it permanently unhighlightable. A scan cannot produce that.
+test("a document without block structure still highlights exactly one passage (spec 011 FR-012)", async () => {
+  const app = loadBrowserApp({
+    speech: false,
+    epubUnzip: () => createEpub(["Repeated chapter.", "A distinct middle chapter.", "Repeated chapter."]),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", {
+      target: { files: [createFile("dupes.epub", "application/epub+zip")] },
+    });
+
+    await app.trigger("play", "click");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Three chapters merge into two chunks here (map [0,1,0] — the non-monotonic shape this test
+    // exists to guard). Iterate the chunks that actually exist: past the last one playback has
+    // finished, where nothing being highlighted is correct rather than a defect.
+    let chunk = 0;
+    while (app.window.lastAudio) {
+      assert.equal(
+        activePassages(app).length,
+        1,
+        `expected exactly one highlighted passage at chunk ${chunk}`,
+      );
+      const audio = app.window.lastAudio;
+      app.window.lastAudio = null;
+      audio.onended();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      chunk += 1;
+    }
+
+    assert.ok(chunk >= 2, `expected to have checked every chunk, only reached ${chunk}`);
+  } finally {
+    app.restore();
+  }
+});
+
 test("the currently-playing paragraph is highlighted in the literal view", async () => {
   const app = loadBrowserApp({
     speech: false,
