@@ -656,6 +656,24 @@
     };
   }
 
+  // Flattens the AST's sections into the reading-order list of block texts the reader renders as
+  // clickable passages. Returns an empty array for a document with no reconstructed blocks (an
+  // EPUB), which callers treat as "no structural passages available" and fall back to splitting
+  // display text on blank lines.
+  //
+  // A block whose own text still contains a blank line is one the geometry could not separate —
+  // a PDF reporting text with no usable positions yields a single block holding the whole page.
+  // Splitting those keeps such documents rendering exactly the passages the blank-line split
+  // produced before structural passages existed; blocks reconstructed from real geometry contain
+  // no blank line and pass through whole.
+  function documentPassages(document) {
+    if (!document || !document.sections) return [];
+    return document.sections
+      .flatMap((section) => section.blocks)
+      .flatMap((block) => String(block.text || "").split(/\n\n/))
+      .filter((text) => text.length > 0);
+  }
+
   const CITATION_MARKER_PATTERN = /\[\d+(?:[,\-–]\s*\d+)*\]/g;
   const BARE_URL_PATTERN = /https?:\/\/\S+/g;
 
@@ -1748,6 +1766,9 @@
     bookmarkKey: null,
     hasBookmark: false,
     paragraphChunkMap: null,
+    // Structural passages from the pipeline's reconstructed blocks, when available. null for a
+    // document with no reconstructed blocks (EPUBs), which renders from the blank-line split.
+    passages: null,
     // Spec 009, research.md Decision 2: a one-shot value, set when a bookmark with a valid
     // mid-chunk offset is restored, consumed and cleared the first time speakLocalChunk creates
     // an Audio element afterward. null at all other times.
@@ -1946,14 +1967,45 @@
   // in styles.css) rather than measured in JS — a JS approach that measures each paragraph's
   // rendered height to place gutter numbers is fragile (layout timing, reflow-on-resize) and
   // was replaced with this simpler, always-correct approach.
-  function renderLiteralTextWithLineNumbers(container, text, activeIndex = -1) {
+  // Structural passages when the pipeline produced them (PDFs); otherwise the blank-line split.
+  // EPUBs have no positioned items and so no reconstructed blocks, and their text genuinely is
+  // chapter-separated by blank lines — the fallback is the correct path for them, not a degraded
+  // one.
+  function resolvePassages(text, passages) {
+    if (passages && passages.length) return passages;
+    return String(text || "").split(/\n\n/).filter((paragraph) => paragraph.length > 0);
+  }
+
+  // One clickable passage button. A passage with no mapped chunk is rendered disabled rather than
+  // omitted, so the reading pane always shows the document's full text.
+  function buildPassageButton(doc, paragraph, chunkIndex, activeIndex) {
+    const block = doc.createElement("button");
+    block.type = "button";
+    block.className = "literal-paragraph";
+    block.textContent = paragraph;
+
+    if (chunkIndex === null || chunkIndex === undefined) {
+      block.setAttribute("disabled", "true");
+      return block;
+    }
+
+    block.setAttribute("data-chunk-index", String(chunkIndex));
+    block.setAttribute("aria-label", "Start reading near this passage");
+    if (chunkIndex === activeIndex) {
+      block.className = "literal-paragraph is-active";
+      block.setAttribute("aria-current", "true");
+    }
+    return block;
+  }
+
+  function renderLiteralTextWithLineNumbers(container, text, activeIndex = -1, passages = null) {
     const doc = container.ownerDocument;
     if (!doc || typeof container.replaceChildren !== "function") {
       renderExtractedText(container, text);
       return;
     }
 
-    const paragraphs = String(text || "").split(/\n\n/).filter((paragraph) => paragraph.length > 0);
+    const paragraphs = resolvePassages(text, passages);
     if (!paragraphs.length) {
       renderExtractedText(container, text);
       return;
@@ -1965,22 +2017,8 @@
 
     let activeBlock = null;
     const paragraphBlocks = paragraphs.map((paragraph, index) => {
-      const block = doc.createElement("button");
-      block.type = "button";
-      block.className = "literal-paragraph";
-      block.textContent = paragraph;
-      const chunkIndex = state.paragraphChunkMap[index];
-      if (chunkIndex !== null && chunkIndex !== undefined) {
-        block.setAttribute("data-chunk-index", String(chunkIndex));
-        block.setAttribute("aria-label", "Start reading near this passage");
-        if (chunkIndex === activeIndex) {
-          block.className = "literal-paragraph is-active";
-          if (typeof block.setAttribute === "function") block.setAttribute("aria-current", "true");
-          activeBlock = block;
-        }
-      } else if (typeof block.setAttribute === "function") {
-        block.setAttribute("disabled", "true");
-      }
+      const block = buildPassageButton(doc, paragraph, state.paragraphChunkMap[index], activeIndex);
+      if (block.className === "literal-paragraph is-active") activeBlock = block;
       return block;
     });
 
@@ -1997,7 +2035,7 @@
   }
 
   function renderPlaybackText(activeIndex = -1) {
-    renderLiteralTextWithLineNumbers(elements.textOutput, state.text, activeIndex);
+    renderLiteralTextWithLineNumbers(elements.textOutput, state.text, activeIndex, state.passages);
   }
 
   function clearDocumentState(message = "Choose a PDF to begin.") {
@@ -2012,6 +2050,7 @@
     state.bookmarkKey = null;
     state.hasBookmark = false;
     state.paragraphChunkMap = null;
+    state.passages = null;
     state.localAudioCache.clear();
     ewma.reset();
     elements.fileName.textContent = "No file selected";
@@ -2445,12 +2484,17 @@
       setStatus(`Reading page ${pageNumber} of ${pdf.numPages}...`);
     }
 
-    const { displayText, narrationText } = await buildPipelineOutput(pagesOfItems, pageWidth, pageHeight);
+    const { displayText, narrationText, document } = await buildPipelineOutput(pagesOfItems, pageWidth, pageHeight);
 
     return {
       pageCount: pdf.numPages,
       text: displayText,
       narrationText,
+      // The pipeline already reconstructed the document's structural blocks from item geometry.
+      // Passing them through lets the reader render one passage per real block instead of
+      // re-deriving passages by splitting displayText on blank lines — a split that cannot
+      // recover a boundary between blocks that displayText joins with a single space.
+      passages: documentPassages(document),
     };
   }
 
@@ -2604,6 +2648,7 @@
         { keepFirstChunkShort: true },
       );
       state.paragraphChunkMap = null;
+      state.passages = result.passages && result.passages.length ? result.passages : null;
       state.chunkIndex = 0;
       state.highlightOffset = 0;
       state.localAudioCache.clear();

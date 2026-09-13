@@ -2349,6 +2349,31 @@ function createPdf(text, pageCount = 1) {
   };
 }
 
+// Unlike createPdf (one text item, no geometry), this emits items positioned the way PDF.js
+// reports them: transform[4] is x, transform[5] is the top y, with a real width/height and a
+// getViewport for page dimensions. Block reconstruction is entirely position-driven, so only a
+// fixture with real geometry can produce more than one structural block. Each entry in
+// `paragraphs` is laid out as its own vertically separated line.
+function createPositionedPdf(paragraphs, { pageWidth = 600, pageHeight = 800, fontSize = 12 } = {}) {
+  const items = paragraphs.map((text, index) => ({
+    str: text,
+    transform: [fontSize, 0, 0, fontSize, 50, 700 - index * 100],
+    width: 200,
+    height: fontSize,
+  }));
+  return {
+    numPages: 1,
+    async getPage() {
+      return {
+        getViewport: () => ({ width: pageWidth, height: pageHeight }),
+        async getTextContent() {
+          return { items };
+        },
+      };
+    },
+  };
+}
+
 function createFile(name, type = "application/pdf", marker = name) {
   return {
     name,
@@ -2657,6 +2682,41 @@ test("choosing an EPUB file extracts its chapter text and enables playback", asy
     assert.equal(app.elements.play.disabled, false);
     assert.equal(app.elements.documentControls.hidden, false);
     assert.match(app.elements.textOutput.textContent, /First chapter body\./);
+  } finally {
+    app.restore();
+  }
+});
+
+// EPUBs carry no positioned items, so the pipeline reconstructs no structural blocks for them and
+// documentPassages yields nothing. Their text is genuinely chapter-separated by blank lines, so
+// the blank-line split is the correct path for them rather than a degraded one — this guards that
+// a document with no structural passages still renders one clickable passage per chapter.
+test("an EPUB with no structural blocks still renders one clickable passage per chapter", async () => {
+  const app = loadBrowserApp({
+    speech: false,
+    epubUnzip: () => createEpub(["First chapter.", "Second chapter."]),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", {
+      target: { files: [createFile("book.epub", "application/epub+zip")] },
+    });
+
+    const passages = app.elements.textOutput.children.filter(
+      (node) => node.className && node.className.startsWith("literal-paragraph"),
+    );
+
+    assert.deepEqual(
+      passages.map((node) => node.textContent),
+      ["First chapter.", "Second chapter."],
+    );
   } finally {
     app.restore();
   }
@@ -3607,6 +3667,44 @@ test("clicking a paragraph in the default literal view jumps playback to its map
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     assert.equal(app.window.lastAudio.src, "blob:audio-1");
+  } finally {
+    app.restore();
+  }
+});
+
+// The pipeline already reconstructs structural blocks from item geometry, but the reader throws
+// that structure away and re-derives passages by splitting the display text on blank lines.
+// Display text joins blocks with a single space, so a document whose blocks are separated only by
+// layout (no blank line in the text) collapses to ONE passage today, even though the pipeline
+// knows there are two. Asserts the observable outcome: one clickable passage per structural block.
+test("the reader renders one clickable passage per structural block, not per blank-line split", async () => {
+  const app = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(
+      createPositionedPdf(["First paragraph here.", "Second paragraph here."]),
+    ),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) {
+        return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      }
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", {
+      target: { files: [createFile("positioned.pdf")] },
+    });
+
+    const passages = app.elements.textOutput.children.filter(
+      (node) => node.className && node.className.startsWith("literal-paragraph"),
+    );
+
+    assert.deepEqual(
+      passages.map((node) => node.textContent),
+      ["First paragraph here.", "Second paragraph here."],
+    );
   } finally {
     app.restore();
   }
