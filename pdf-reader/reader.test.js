@@ -4250,7 +4250,7 @@ test("reader layout keeps long PDF text inside a viewport-constrained scroll reg
 // per-page extraction loop completed ("Reading page 303 of 303...") and the tab then went
 // unresponsive inside splitIntoSpeechChunks. Measured cost was quadratic in total text length
 // (10.8KB/131ms, 21.7KB/1029ms, 43.4KB/8180ms, 86.8KB/64110ms - ~4x per doubling), because
-// every boundary position re-scanned the whole string through isProtectedPosition.
+// every boundary position re-scanned the whole string to test whether it was protected.
 //
 // OWASP A08:2025 Mishandling of Exceptional Conditions - a realistic document must chunk in
 // bounded time rather than hanging the main thread. This asserts the observable outcome

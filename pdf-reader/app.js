@@ -1258,17 +1258,6 @@
   }
   // --- end protected-span index ---
 
-  // Single dispatch point for all protected-span detectors (research.md Decision 2).
-  function isProtectedPosition(text, position) {
-    return (
-      isProtectedAbbreviationPeriod(text, position)
-      || isProtectedDecimal(text, position)
-      || isProtectedCurrencyPhrase(text, position)
-      || isProtectedOrdinal(text, position)
-      || isProtectedYearPhrase(text, position)
-    );
-  }
-
   // research.md Decision 1 (revised): each tier's regex identifies where that tier's boundary
   // falls; the boundary "position" is the offset right after the punctuation/whitespace run, so
   // splitting at it never drops or duplicates a character. Bounded, non-nested quantifiers only
@@ -1955,7 +1944,6 @@
     audio: null,
     audioUrl: "",
     isPaused: false,
-    highlightOffset: 0,
     loadId: 0,
     playbackActive: false,
     playbackId: 0,
@@ -2241,7 +2229,6 @@
     state.chunkIndex = 0;
     state.audio = null;
     state.isPaused = false;
-    state.highlightOffset = 0;
     state.playbackActive = false;
     state.playbackId += 1;
     state.bookmarkKey = null;
@@ -2285,7 +2272,6 @@
     stopSpeech();
     state.audio = null;
     state.isPaused = false;
-    state.highlightOffset = 0;
     state.playbackActive = false;
     state.playbackId += 1;
     if (state.text) renderPlaybackText();
@@ -2304,10 +2290,6 @@
     } catch {
       return false;
     }
-  }
-
-  function localVoicesEndpoint(value) {
-    return localTtsEndpoints(value, "voices")[0];
   }
 
   function localTtsEndpoints(value, mode = "speech") {
@@ -2850,7 +2832,6 @@
       state.chunks = chunks;
       state.paragraphChunkMap = paragraphChunkMap;
       state.chunkIndex = 0;
-      state.highlightOffset = 0;
       state.localAudioCache.clear();
       state.bookmarkKey = null;
       state.hasBookmark = false;
@@ -3002,7 +2983,6 @@
     state.playbackActive = false;
     state.playbackId += 1;
     if (resetProgress) state.chunkIndex = 0;
-    state.highlightOffset = 0;
     state.localAudioCache.clear();
     ewma.reset();
     if (state.text) renderPlaybackText();
@@ -3049,7 +3029,6 @@
     if (!Number.isInteger(index) || index < 0 || index >= state.chunks.length) return;
 
     state.chunkIndex = index;
-    state.highlightOffset = 0;
     updateProgress();
 
     stopSpeech();
