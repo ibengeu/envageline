@@ -1386,6 +1386,27 @@
     return splitByTier(normalized, "paragraph", maxLength);
   }
 
+  // Chunks each block's narration separately and concatenates, recording the index of the first
+  // chunk each block contributed. This yields the exact block -> chunk relationship in one linear
+  // pass, replacing the word-overlap similarity search for documents that have structural blocks.
+  //
+  // Chunking per block is safe because the paragraph tier splits at blank lines unconditionally:
+  // chunking blocks separately produces byte-identical chunks to chunking the blocks joined by
+  // blank lines, so nothing about what is spoken (or which chunk index a bookmark refers to)
+  // changes. A block that contributes no chunks (empty or whitespace-only) points at where its
+  // chunks would have started, so every block still resolves to a valid position.
+  function chunkBlocksWithMapping(blocks, maxLength = 260) {
+    const chunks = [];
+    const firstChunkIndexByBlock = [];
+
+    blocks.forEach((block) => {
+      firstChunkIndexByBlock.push(chunks.length);
+      splitIntoSpeechChunks(block, maxLength).forEach((chunk) => chunks.push(chunk));
+    });
+
+    return { chunks, firstChunkIndexByBlock };
+  }
+
   function normalizedWordSet(text) {
     return new Set(String(text || "").toLowerCase().match(/[a-z0-9']+/g) || []);
   }
@@ -1667,6 +1688,49 @@
     return merged;
   }
 
+  // mergeShortChunks with a pre-merge -> post-merge index table alongside the merged chunks, so
+  // an index recorded against the unmerged list (chunkBlocksWithMapping's block mapping) can be
+  // translated into the merged list the reader actually plays. Merging collapses runs of short
+  // chunks, so without this translation a block index points past the end of the merged list.
+  //
+  // Kept separate from mergeShortChunks rather than folded into it: that function's chunk output
+  // is pinned by its own tests and is used on the EPUB path, which needs no mapping. The chunks
+  // produced here are asserted to be identical to its output.
+  function mergeChunksWithMapping(chunks, targetLength = 260, { keepFirstChunkShort = false } = {}) {
+    if (keepFirstChunkShort && chunks.length > 1) {
+      const rest = mergeChunksWithMapping(chunks.slice(1), targetLength);
+      return {
+        chunks: [chunks[0], ...rest.chunks],
+        // The opening chunk occupies merged index 0, so every index from the recursive call
+        // shifts by one.
+        postIndexByPreIndex: [0, ...rest.postIndexByPreIndex.map((index) => index + 1)],
+      };
+    }
+
+    const merged = [];
+    const postIndexByPreIndex = [];
+    let current = "";
+
+    chunks.forEach((chunk) => {
+      if (!current) {
+        current = chunk;
+        postIndexByPreIndex.push(merged.length);
+        return;
+      }
+      if (current.length + 1 + chunk.length <= targetLength) {
+        current = `${current} ${chunk}`;
+        postIndexByPreIndex.push(merged.length);
+        return;
+      }
+      merged.push(current);
+      current = chunk;
+      postIndexByPreIndex.push(merged.length);
+    });
+
+    if (current) merged.push(current);
+    return { chunks: merged, postIndexByPreIndex };
+  }
+
   // Target length for merged speech chunks. Chosen from measured synthesis cost: at ~260
   // characters Kokoro renders roughly 3.2x faster than realtime (vs ~1.1x at the unmerged mean
   // of 75), which is what keeps prefetch comfortably ahead of playback. Well inside the TTS
@@ -1714,6 +1778,8 @@
     resolveReadingOrder,
     renderNarrationText,
     mapParagraphsToChunks,
+    chunkBlocksWithMapping,
+    mergeChunksWithMapping,
     assessCapabilities,
     assignBlockIds,
     buildDocumentAst,

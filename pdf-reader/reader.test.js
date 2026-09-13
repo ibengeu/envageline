@@ -21,6 +21,8 @@ const {
   resolveReadingOrder,
   renderNarrationText,
   mapParagraphsToChunks,
+  chunkBlocksWithMapping,
+  mergeChunksWithMapping,
   assessCapabilities,
   assignBlockIds,
   buildDocumentAst,
@@ -4172,6 +4174,108 @@ test("mapParagraphsToChunks maps a book-scale document in bounded time (UI freez
   assert.equal(mapped.length, paragraphCount);
   assert.ok(elapsedMs < 1500, `expected under 1500ms, took ${elapsedMs}ms`);
 });
+// The word-overlap mapping above resolves a passage to a chunk by similarity, which is both
+// approximate (a passage can map to a chunk that does not contain it) and costly at book scale.
+// Chunking each narratable block separately and concatenating produces byte-identical chunks to
+// chunking the joined narration — the paragraph tier splits at blank lines unconditionally — so
+// the exact block -> first-chunk index can be recorded while chunking, with no change to what is
+// spoken. Asserts the observable contract: every block resolves to a chunk that genuinely begins
+// that block's text, and it holds at book scale.
+test("chunkBlocksWithMapping resolves every block to a chunk that actually contains its text", () => {
+  const blocks = [
+    "The executive who wants to win must understand preparation.",
+    "Mr. Smith paid $1,250.75 in 1987, roughly 12.5% of the total.",
+    "Short one.",
+    "A considerably longer paragraph that will certainly exceed the default maximum chunk "
+      + "length, because it keeps going with additional clauses, more detail, and further "
+      + "elaboration well past the limit that the chunker is willing to tolerate in one piece.",
+  ];
+
+  const { chunks, firstChunkIndexByBlock } = chunkBlocksWithMapping(blocks, 260);
+
+  assert.equal(firstChunkIndexByBlock.length, blocks.length);
+  blocks.forEach((block, index) => {
+    const chunk = chunks[firstChunkIndexByBlock[index]];
+    const opening = block.split(/\s+/).slice(0, 3).join(" ");
+    assert.ok(
+      chunk.startsWith(opening),
+      `block ${index} mapped to a chunk that does not begin it: ${JSON.stringify(chunk.slice(0, 60))}`,
+    );
+  });
+});
+
+// The safety property the whole per-block mapping rests on: chunking blocks separately must
+// produce exactly the chunks that chunking the joined narration produces. If this ever diverges,
+// what the listener hears changes and saved bookmark indices silently point at the wrong passage,
+// so it is pinned here rather than left as an assumption. Covers the cases where divergence would
+// be most likely: short adjacent blocks the paragraph tier might merge, a block long enough to
+// split internally, protected spans, and blocks contributing no chunks at all.
+test("chunkBlocksWithMapping produces exactly the chunks that chunking the joined narration does", () => {
+  const cases = [
+    ["One.", "Two.", "Three.", "Four.", "Five."],
+    ["Tiny.", "A paragraph of moderate length that sits comfortably under the limit.", "Wee."],
+    ["Dr. Smith paid $400.", "In 2024 it was 21.5%."],
+    [
+      "Short.",
+      "A considerably longer paragraph that will certainly exceed the default maximum chunk "
+        + "length of two hundred and sixty characters, because it keeps going and going with "
+        + "additional clauses, more detail, and further elaboration well past the limit.",
+    ],
+    ["Real text here.", "   ", "", "More real text."],
+  ];
+
+  cases.forEach((blocks) => {
+    const { chunks } = chunkBlocksWithMapping(blocks, 260);
+    assert.deepEqual(chunks, splitIntoSpeechChunks(blocks.join("\n\n"), 260));
+  });
+});
+
+// chunkBlocksWithMapping's indices refer to unmerged chunks, but the reader plays the merged
+// list, and merging collapses runs of short chunks. A block index carried across that boundary
+// unchanged points past the end of the merged list: six blocks merging to two chunks leaves four
+// of them resolving to nothing. Asserts the property that survives merging — every block still
+// resolves to a merged chunk that contains its text — and that the merged chunks themselves are
+// exactly what mergeShortChunks produces, so nothing about what is spoken changes.
+test("mergeChunksWithMapping keeps every block resolving to a merged chunk that contains its text", () => {
+  const blocks = [
+    "One.",
+    "Two.",
+    "Three.",
+    "A much longer paragraph that will not merge with its neighbours because it already exceeds "
+      + "the target length on its own, filling the chunk budget entirely by itself here.",
+    "Four.",
+    "Five.",
+  ];
+
+  const { chunks, firstChunkIndexByBlock } = chunkBlocksWithMapping(blocks, 260);
+  const merged = mergeChunksWithMapping(chunks, 260, { keepFirstChunkShort: true });
+
+  assert.deepEqual(merged.chunks, mergeShortChunks(chunks, 260, { keepFirstChunkShort: true }));
+
+  blocks.forEach((block, index) => {
+    const mergedIndex = merged.postIndexByPreIndex[firstChunkIndexByBlock[index]];
+    const chunk = merged.chunks[mergedIndex];
+    const opening = block.split(/\s+/).slice(0, 2).join(" ");
+    assert.ok(
+      chunk && chunk.includes(opening),
+      `block ${index} lost its chunk after merging: resolved to ${JSON.stringify(chunk)}`,
+    );
+  });
+});
+
+test("chunkBlocksWithMapping maps a book-scale document in bounded time", () => {
+  const blocks = Array.from({ length: 1206 }, (_, i) =>
+    `Paragraph ${i} about executives negotiating contracts and winning deals in business.`);
+
+  const start = Date.now();
+  const { chunks, firstChunkIndexByBlock } = chunkBlocksWithMapping(blocks, 260);
+  const elapsedMs = Date.now() - start;
+
+  assert.equal(firstChunkIndexByBlock.length, blocks.length);
+  assert.ok(chunks.length > 0, "expected a book-scale document to produce chunks");
+  assert.ok(elapsedMs < 150, `expected under 150ms, took ${elapsedMs}ms`);
+});
+
 // --- Buffering improvements (measured against the local Kokoro server) ---
 //
 // Measured synthesis cost is ~1.55s fixed per call plus ~0.0143s/char, so chunk size dominates
