@@ -1499,6 +1499,10 @@
     bookmarkKey: null,
     hasBookmark: false,
     paragraphChunkMap: null,
+    // Spec 009, research.md Decision 2: a one-shot value, set when a bookmark with a valid
+    // mid-chunk offset is restored, consumed and cleared the first time speakLocalChunk creates
+    // an Audio element afterward. null at all other times.
+    pendingResumeOffsetSeconds: null,
   };
 
   const BOOKMARK_VERSION = 1;
@@ -1591,6 +1595,14 @@
     }
   }
 
+  // Spec 009, research.md Decision 1: `offsetSeconds` is a purely optional, additive field —
+  // absent on every pre-009 record. Its presence/absence never affects whether the surrounding
+  // bookmark record itself is valid (that stays governed by version/index/savedAt alone); an
+  // invalid present value is simply not honored at restore time (FR-004, FR-005).
+  function isValidBookmarkOffsetSeconds(value) {
+    return Number.isFinite(value) && value >= 0;
+  }
+
   function readBookmark(key, chunkCount) {
     const storage = bookmarkStorage();
     if (!key || !storage) return null;
@@ -1624,11 +1636,18 @@
       return;
     }
     try {
-      storage.setItem(state.bookmarkKey, JSON.stringify({
+      const record = {
         version: BOOKMARK_VERSION,
         index: state.chunkIndex,
         savedAt: Date.now(),
-      }));
+      };
+      // Spec 009 FR-001/Edge Cases: only recorded when audio is actually loaded with a valid
+      // position; omitted entirely otherwise, keeping the saved shape identical to a pre-009
+      // bookmark for every case where there's nothing meaningful to capture.
+      if (state.audio && isValidBookmarkOffsetSeconds(state.audio.currentTime)) {
+        record.offsetSeconds = state.audio.currentTime;
+      }
+      storage.setItem(state.bookmarkKey, JSON.stringify(record));
       state.hasBookmark = true;
       updateButtons();
       setStatus(`Bookmark saved for passage ${state.chunkIndex + 1}.`);
@@ -2071,16 +2090,30 @@
     return blocks.some((block) => block.column !== undefined) ? "two-column" : "single";
   }
 
-  function buildPipelineOutput(pagesOfItems, pageWidth, pageHeight, policy) {
+  // Yields to a real macrotask (not just a microtask/Promise queue) so the browser can repaint
+  // and respond to input mid-processing — a plain `await Promise.resolve()` would not achieve
+  // this, since it never leaves the current turn of the event loop.
+  function yieldToMainThread() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  async function buildPipelineOutput(pagesOfItems, pageWidth, pageHeight, policy) {
     const resolvedPolicy = resolveSpeechPolicy(policy);
     const displayPages = pagesOfItems.map((items) => items.map((item) => item.str).join(" "));
     const displayText = normalizePdfText(displayPages.join("\n\n"));
 
-    const rawBlocksByPage = assignBlockIds(pagesOfItems.map((items, pageIndex) => {
-      const positioned = extractPositionedItems(items, pageIndex, pageWidth, pageHeight);
+    // UI-freeze fix: reconstructing blocks for every page in one uninterrupted synchronous pass
+    // is what made processing a large document freeze the tab. A plain `.map()` can't yield
+    // between iterations, so this is a `for` loop with an explicit macrotask yield after each
+    // page (matching the same per-page granularity already used during PDF text extraction).
+    const rawBlocksByPageUnindexed = [];
+    for (let pageIndex = 0; pageIndex < pagesOfItems.length; pageIndex += 1) {
+      const positioned = extractPositionedItems(pagesOfItems[pageIndex], pageIndex, pageWidth, pageHeight);
       const lines = reconstructLines(positioned);
-      return splitParagraphBoundaries(reconstructBlocks(lines));
-    }));
+      rawBlocksByPageUnindexed.push(splitParagraphBoundaries(reconstructBlocks(lines)));
+      if (pageIndex < pagesOfItems.length - 1) await yieldToMainThread();
+    }
+    const rawBlocksByPage = assignBlockIds(rawBlocksByPageUnindexed);
 
     const stats = analyzeDocumentStats(rawBlocksByPage);
     const classifiedBlocksByPage = classifyBlocks(rawBlocksByPage, stats);
@@ -2149,7 +2182,7 @@
       setStatus(`Reading page ${pageNumber} of ${pdf.numPages}...`);
     }
 
-    const { displayText, narrationText } = buildPipelineOutput(pagesOfItems, pageWidth, pageHeight);
+    const { displayText, narrationText } = await buildPipelineOutput(pagesOfItems, pageWidth, pageHeight);
 
     return {
       pageCount: pdf.numPages,
@@ -2304,6 +2337,7 @@
       state.localAudioCache.clear();
       state.bookmarkKey = null;
       state.hasBookmark = false;
+      state.pendingResumeOffsetSeconds = null;
 
       if (state.chunks.length) {
         const bookmarkKey = await bookmarkKeyForFile(file);
@@ -2313,6 +2347,9 @@
         if (bookmark) {
           state.chunkIndex = bookmark.index;
           state.hasBookmark = true;
+          if (isValidBookmarkOffsetSeconds(bookmark.offsetSeconds)) {
+            state.pendingResumeOffsetSeconds = bookmark.offsetSeconds;
+          }
         }
       }
 
@@ -2381,6 +2418,15 @@
       if (state.audioUrl) globalScope.URL.revokeObjectURL(state.audioUrl);
       state.audioUrl = globalScope.URL.createObjectURL(blob);
       state.audio = new globalScope.Audio(state.audioUrl);
+      // Spec 009, research.md Decisions 2/3: apply the one-shot pending resume offset, then
+      // unconditionally clear it — every later call to speakLocalChunk in this session (chunk
+      // advance, reconnect) finds it already null and behaves exactly as before this feature.
+      // An out-of-range value is left to the platform's own currentTime clamping (FR-005); no
+      // duration pre-check is performed.
+      if (state.pendingResumeOffsetSeconds !== null) {
+        state.audio.currentTime = state.pendingResumeOffsetSeconds;
+        state.pendingResumeOffsetSeconds = null;
+      }
       state.audio.onended = () => {
         if (playbackSession !== state.playbackId) return;
         state.audio = null;
@@ -2447,7 +2493,7 @@
     updateButtons();
   }
 
-  elements.fileInput.addEventListener("change", (event) => handleFile(event.target.files[0]));
+  elements.fileInput.addEventListener("change", async (event) => handleFile(event.target.files[0]));
   elements.play.addEventListener("click", playReading);
   elements.pause.addEventListener("click", pauseReading);
   elements.resume.addEventListener("click", resumeReading);

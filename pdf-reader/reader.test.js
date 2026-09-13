@@ -615,19 +615,38 @@ test("assignBlockIds preserves every existing field on each block unchanged", ()
   assert.deepEqual(result.lines, block.lines);
 });
 
-test("buildPipelineOutput produces a display text and a narration text from the same pages", () => {
+test("buildPipelineOutput produces a display text and a narration text from the same pages", async () => {
   const pages = [
     [
       { str: "Plain body text.", transform: [12, 0, 0, 12, 50, 700], width: 90, height: 12 },
     ],
   ];
 
-  const result = buildPipelineOutput(pages, 600, 800);
+  const result = await buildPipelineOutput(pages, 600, 800);
 
   assert.equal(typeof result.displayText, "string");
   assert.equal(typeof result.narrationText, "string");
   assert.ok(result.displayText.includes("Plain body text."));
   assert.equal(result.displayText, result.narrationText);
+});
+
+// UI-freeze fix: buildPipelineOutput's per-page block-reconstruction loop must yield to a real
+// macrotask (not just a microtask) between pages, so the browser can repaint/handle input during
+// processing of a large document — mirrors the existing per-page yield already proven for PDF
+// text extraction itself (see "extraction reports progress once per page").
+test("buildPipelineOutput yields to a macrotask between pages during block reconstruction", async () => {
+  const pages = [
+    [{ str: "Page one.", transform: [12, 0, 0, 12, 50, 700], width: 60, height: 12 }],
+    [{ str: "Page two.", transform: [12, 0, 0, 12, 50, 700], width: 60, height: 12 }],
+    [{ str: "Page three.", transform: [12, 0, 0, 12, 50, 700], width: 60, height: 12 }],
+  ];
+
+  let macrotaskRanDuringProcessing = false;
+  globalThis.setTimeout(() => { macrotaskRanDuringProcessing = true; }, 0);
+
+  await buildPipelineOutput(pages, 600, 800);
+
+  assert.equal(macrotaskRanDuringProcessing, true);
 });
 
 test("classifyBlocks promotes a block to header when it repeats at a stable region on most pages", () => {
@@ -1262,7 +1281,7 @@ test("buildDocumentAst and renderNarrationText called with no policy argument re
   assert.ok(!narrationText.includes("Table cell"));
 });
 
-test("buildPipelineOutput called with no policy argument reproduces the pre-005 baseline exactly (US1)", () => {
+test("buildPipelineOutput called with no policy argument reproduces the pre-005 baseline exactly (US1)", async () => {
   const headerText = "Evangeline Research Report";
   const pages = [
     [
@@ -1277,7 +1296,7 @@ test("buildPipelineOutput called with no policy argument reproduces the pre-005 
     ],
   ];
 
-  const result = buildPipelineOutput(pages, 600, 800);
+  const result = await buildPipelineOutput(pages, 600, 800);
 
   assert.ok(!result.narrationText.includes(headerText));
   assert.ok(result.narrationText.includes("Real body content"));
@@ -1318,7 +1337,7 @@ test("buildDocumentAst's sections lose no block and duplicate none, relative to 
 // is deliberately independent of the exclusion-behavior tests above (which assert inclusion/
 // exclusion, not exact literal values) — a schema/section change to this feature must not shift
 // so much as one character of either string.
-test("buildPipelineOutput's displayText/narrationText match the pre-004 baseline exactly (US1)", () => {
+test("buildPipelineOutput's displayText/narrationText match the pre-004 baseline exactly (US1)", async () => {
   const headerText = "Evangeline Research Report";
   const bodyText = "Real body content that should be spoken, referencing [12] and https://example.com.";
   const pageNumberText = "1";
@@ -1336,7 +1355,7 @@ test("buildPipelineOutput's displayText/narrationText match the pre-004 baseline
     ],
   ];
 
-  const result = buildPipelineOutput(pages, 600, 800);
+  const result = await buildPipelineOutput(pages, 600, 800);
 
   assert.equal(
     result.displayText,
@@ -1348,7 +1367,7 @@ test("buildPipelineOutput's displayText/narrationText match the pre-004 baseline
   );
 });
 
-test("buildPipelineOutput assigns identical block/section ids across repeated calls with the same input (US1, FR-009, SC-003)", () => {
+test("buildPipelineOutput assigns identical block/section ids across repeated calls with the same input (US1, FR-009, SC-003)", async () => {
   const pages = [
     [
       { str: "Chapter One", transform: [18, 0, 0, 18, 50, 760], width: 120, height: 18 },
@@ -1356,8 +1375,8 @@ test("buildPipelineOutput assigns identical block/section ids across repeated ca
     ],
   ];
 
-  const first = buildPipelineOutput(pages, 600, 800);
-  const second = buildPipelineOutput(pages, 600, 800);
+  const first = await buildPipelineOutput(pages, 600, 800);
+  const second = await buildPipelineOutput(pages, 600, 800);
 
   const firstIds = first.document.sections.flatMap((section) => [section.id, ...section.blocks.map((block) => block.id)]);
   const secondIds = second.document.sections.flatMap((section) => [section.id, ...section.blocks.map((block) => block.id)]);
@@ -1370,7 +1389,7 @@ test("buildPipelineOutput assigns identical block/section ids across repeated ca
 // header appearing before the first real heading, run through the full pipeline (not just
 // buildDocumentAst directly), forms its own leading implicit section rather than attaching to
 // "Introduction".
-test("buildPipelineOutput's document gives a pre-heading recurring header its own leading implicit section (T023)", () => {
+test("buildPipelineOutput's document gives a pre-heading recurring header its own leading implicit section (T023)", async () => {
   const pages = [
     [
       { str: "Evangeline Research Report", transform: [10, 0, 0, 10, 200, 780], width: 180, height: 10 },
@@ -1384,7 +1403,7 @@ test("buildPipelineOutput's document gives a pre-heading recurring header its ow
     ],
   ];
 
-  const result = buildPipelineOutput(pages, 600, 800);
+  const result = await buildPipelineOutput(pages, 600, 800);
 
   assert.equal(result.document.sections.length, 3);
   assert.equal(result.document.sections[0].title, undefined);
@@ -1769,14 +1788,14 @@ test("normalization only affects narratable (policy-included) block text, never 
   assert.ok(!narrationText.includes("nine hundred ninety-nine"));
 });
 
-test("normalization affects narrationText but never displayText or document block text (spec 006, FR-001, SC-005)", () => {
+test("normalization affects narrationText but never displayText or document block text (spec 006, FR-001, SC-005)", async () => {
   const pages = [
     [
       { str: "The device costs $400.", transform: [10, 0, 0, 10, 50, 700], width: 200, height: 10 },
     ],
   ];
 
-  const result = buildPipelineOutput(pages, 600, 800);
+  const result = await buildPipelineOutput(pages, 600, 800);
 
   assert.ok(result.narrationText.includes("four hundred dollars"));
   assert.ok(result.displayText.includes("$400"));
@@ -1944,7 +1963,7 @@ test("assessCapabilities restores console.warn after checking for the fake-worke
   }
 });
 
-test("buildPipelineOutput display text stays literal and unreordered while narration text is cleaned", () => {
+test("buildPipelineOutput display text stays literal and unreordered while narration text is cleaned", async () => {
   const headerText = "Evangeline Research Report";
   const bodyText = "Real body content that should be spoken, referencing [12] and https://example.com.";
   const pageNumberText = "1";
@@ -1962,7 +1981,7 @@ test("buildPipelineOutput display text stays literal and unreordered while narra
     ],
   ];
 
-  const result = buildPipelineOutput(pages, 600, 800);
+  const result = await buildPipelineOutput(pages, 600, 800);
 
   assert.ok(result.displayText.includes(headerText));
   assert.ok(result.displayText.includes(pageNumberText));
@@ -1975,7 +1994,7 @@ test("buildPipelineOutput display text stays literal and unreordered while narra
   assert.ok(result.narrationText.includes("Real body content"));
 });
 
-test("buildPipelineOutput is deterministic across repeated calls with the same input", () => {
+test("buildPipelineOutput is deterministic across repeated calls with the same input", async () => {
   const pages = [
     [
       { str: "Header line", transform: [10, 0, 0, 10, 200, 780], width: 100, height: 10 },
@@ -1987,8 +2006,8 @@ test("buildPipelineOutput is deterministic across repeated calls with the same i
     ],
   ];
 
-  const first = buildPipelineOutput(pages, 600, 800);
-  const second = buildPipelineOutput(pages, 600, 800);
+  const first = await buildPipelineOutput(pages, 600, 800);
+  const second = await buildPipelineOutput(pages, 600, 800);
 
   assert.deepEqual(first, second);
 });
@@ -1997,7 +2016,7 @@ test("buildPipelineOutput is deterministic across repeated calls with the same i
 // single-paragraph blocks only, no footnote/caption/table-shaped content) must narrate exactly
 // as the pre-feature pipeline did — this feature only changes output where its own new evidence
 // positively supports a change (FR-014/SC-006).
-test("buildPipelineOutput leaves a plain, uniform document's narration unaffected by the new classification behaviors (FR-014)", () => {
+test("buildPipelineOutput leaves a plain, uniform document's narration unaffected by the new classification behaviors (FR-014)", async () => {
   const pages = [
     [
       { str: "First paragraph, first line.", transform: [10, 0, 0, 10, 50, 700], width: 150, height: 10 },
@@ -2009,7 +2028,7 @@ test("buildPipelineOutput leaves a plain, uniform document's narration unaffecte
     ],
   ];
 
-  const result = buildPipelineOutput(pages, 600, 800);
+  const result = await buildPipelineOutput(pages, 600, 800);
 
   assert.equal(
     result.narrationText,
@@ -2022,7 +2041,7 @@ test("buildPipelineOutput leaves a plain, uniform document's narration unaffecte
 // new classification behaviors together (heading, multi-paragraph split, footnote) — this spec's
 // own named guarantee (FR-013) that adding new classification types does not relax the existing
 // reproducibility guarantee.
-test("buildPipelineOutput remains deterministic with heading, paragraph-boundary, and footnote content present (FR-013)", () => {
+test("buildPipelineOutput remains deterministic with heading, paragraph-boundary, and footnote content present (FR-013)", async () => {
   const pages = [
     [
       { str: "Chapter One", transform: [18, 0, 0, 18, 50, 760], width: 120, height: 18 },
@@ -2034,8 +2053,8 @@ test("buildPipelineOutput remains deterministic with heading, paragraph-boundary
     ],
   ];
 
-  const first = buildPipelineOutput(pages, 600, 800);
-  const second = buildPipelineOutput(pages, 600, 800);
+  const first = await buildPipelineOutput(pages, 600, 800);
+  const second = await buildPipelineOutput(pages, 600, 800);
 
   assert.deepEqual(first, second);
 });
@@ -2787,6 +2806,144 @@ test("bookmarking the selected passage saves only a local resume position", asyn
   }
 });
 
+test("bookmarking while audio is loaded captures the current playback position (spec 009 US1, FR-001)", async () => {
+  const storage = {
+    values: new Map(),
+    getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
+    setItem(key, value) { this.values.set(key, String(value)); },
+    removeItem(key) { this.values.delete(key); },
+  };
+  const file = createFile("private.pdf", "application/pdf", "mid-chunk-bytes");
+  file.arrayBuffer = async () => new TextEncoder().encode("mid-chunk-bytes").buffer;
+  const app = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    localStorage: storage,
+    fetchImpl: async (url) => {
+      if (url.endsWith("/voices")) return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+      return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+    },
+  });
+  try {
+    app.elements.localEndpoint.value = "/v1/audio/speech";
+    await app.trigger("localEndpoint", "change");
+    await app.trigger("fileInput", "change", { target: { files: [file] } });
+    await app.trigger("play", "click");
+    app.window.lastAudio.currentTime = 3.5;
+
+    await app.trigger("bookmark", "click");
+
+    const [, value] = storage.values.entries().next().value;
+    assert.equal(JSON.parse(value).offsetSeconds, 3.5);
+  } finally {
+    app.restore();
+  }
+});
+
+test("reopening a bookmark with a saved offset resumes at that position (spec 009 US1, FR-002)", async () => {
+  const storage = {
+    values: new Map(),
+    getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
+    setItem(key, value) { this.values.set(key, String(value)); },
+    removeItem(key) { this.values.delete(key); },
+  };
+  const file = createFile("private.pdf", "application/pdf", "resume-offset-bytes");
+  file.arrayBuffer = async () => new TextEncoder().encode("resume-offset-bytes").buffer;
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/voices")) return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+    return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+  };
+  const first = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    localStorage: storage,
+    fetchImpl,
+  });
+  try {
+    first.elements.localEndpoint.value = "/v1/audio/speech";
+    await first.trigger("localEndpoint", "change");
+    await first.trigger("fileInput", "change", { target: { files: [file] } });
+    await first.trigger("play", "click");
+    first.window.lastAudio.currentTime = 2.25;
+    await first.trigger("bookmark", "click");
+  } finally {
+    first.restore();
+  }
+
+  const reopened = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    localStorage: storage,
+    fetchImpl,
+  });
+  try {
+    reopened.elements.localEndpoint.value = "/v1/audio/speech";
+    await reopened.trigger("localEndpoint", "change");
+    await reopened.trigger("fileInput", "change", { target: { files: [file] } });
+    await reopened.trigger("play", "click");
+
+    assert.equal(reopened.window.lastAudio.currentTime, 2.25);
+  } finally {
+    reopened.restore();
+  }
+});
+
+test("the offset applies only once — the next chunk starts at time zero (spec 009 US1, FR-003)", async () => {
+  const storage = {
+    values: new Map(),
+    getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
+    setItem(key, value) { this.values.set(key, String(value)); },
+    removeItem(key) { this.values.delete(key); },
+  };
+  const file = createFile("private.pdf", "application/pdf", "one-shot-offset-bytes");
+  file.arrayBuffer = async () => new TextEncoder().encode("one-shot-offset-bytes").buffer;
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/voices")) return { ok: true, async json() { return { voices: ["af_heart"] }; } };
+    return { ok: true, async blob() { return new Blob(["audio"], { type: "audio/wav" }); } };
+  };
+  const first = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    localStorage: storage,
+    fetchImpl,
+  });
+  try {
+    first.elements.localEndpoint.value = "/v1/audio/speech";
+    await first.trigger("localEndpoint", "change");
+    await first.trigger("fileInput", "change", { target: { files: [file] } });
+    await first.trigger("play", "click");
+    first.window.lastAudio.currentTime = 1.5;
+    await first.trigger("bookmark", "click");
+  } finally {
+    first.restore();
+  }
+
+  const reopened = loadBrowserApp({
+    speech: false,
+    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    localStorage: storage,
+    fetchImpl,
+  });
+  try {
+    reopened.elements.localEndpoint.value = "/v1/audio/speech";
+    await reopened.trigger("localEndpoint", "change");
+    await reopened.trigger("fileInput", "change", { target: { files: [file] } });
+    await reopened.trigger("play", "click");
+    assert.equal(reopened.window.lastAudio.currentTime, 1.5);
+
+    // Simulate the resumed chunk finishing, advancing playback to the next chunk.
+    // onended() triggers speakLocalChunk() without awaiting it internally, so its async chain
+    // (cache lookup, fetch, new Audio construction) needs time to settle before lastAudio
+    // reflects the new chunk's element.
+    reopened.window.lastAudio.onended();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(reopened.window.lastAudio.currentTime, 0);
+  } finally {
+    reopened.restore();
+  }
+});
+
 test("reopening the same PDF restores its bookmark without starting audio", async () => {
   const storage = {
     values: new Map(),
@@ -2885,6 +3042,87 @@ test("removing a bookmark makes the same PDF start from the beginning next time"
     assert.equal(storage.values.size, 0);
   } finally {
     app.restore();
+  }
+});
+
+// Spec 009 US2 (non-regression foundation): a bookmark record in the exact pre-009 shape (no
+// offsetSeconds field at all) must be read successfully and resume at chunk-start, exactly as
+// it did before this feature existed — the feature's primary regression guard.
+test("a pre-009-shaped bookmark (no offsetSeconds field) still resumes at chunk-start (spec 009 US2, FR-004)", async () => {
+  const storage = {
+    values: new Map(),
+    getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
+    setItem(key, value) { this.values.set(key, String(value)); },
+    removeItem(key) { this.values.delete(key); },
+  };
+  const file = createFile("private.pdf", "application/pdf", "pre009-bytes");
+  file.arrayBuffer = async () => new TextEncoder().encode("pre009-bytes").buffer;
+  const first = loadBrowserApp({
+    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    localStorage: storage,
+  });
+  try {
+    await first.trigger("fileInput", "change", { target: { files: [file] } });
+    await first.trigger("textOutput", "click", {
+      target: { getAttribute: () => "1", closest() { return this; } },
+    });
+    await first.trigger("bookmark", "click");
+    const [key] = storage.values.keys();
+    // Overwrite with the exact pre-009 shape — no offsetSeconds field — regardless of what this
+    // session's own saveBookmark just wrote, to prove reading an old record works independent of
+    // whether saving has changed.
+    storage.values.set(key, JSON.stringify({ version: 1, index: 1, savedAt: Date.now() }));
+  } finally {
+    first.restore();
+  }
+
+  const reopened = loadBrowserApp({
+    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    localStorage: storage,
+  });
+  try {
+    await reopened.trigger("fileInput", "change", { target: { files: [file] } });
+
+    assert.equal(reopened.elements.status.textContent, "Bookmark restored at passage 2. Press Play to continue.");
+    assert.equal(reopened.elements.bookmark.getAttribute("aria-pressed"), "true");
+  } finally {
+    reopened.restore();
+  }
+});
+
+test("a bookmark with a malformed offsetSeconds still resumes successfully (spec 009 US2, FR-005)", async () => {
+  const storage = {
+    values: new Map(),
+    getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
+    setItem(key, value) { this.values.set(key, String(value)); },
+    removeItem(key) { this.values.delete(key); },
+  };
+  const file = createFile("private.pdf", "application/pdf", "malformed-offset-bytes");
+  file.arrayBuffer = async () => new TextEncoder().encode("malformed-offset-bytes").buffer;
+  const first = loadBrowserApp({
+    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    localStorage: storage,
+  });
+  try {
+    await first.trigger("fileInput", "change", { target: { files: [file] } });
+    await first.trigger("bookmark", "click");
+    const [key] = storage.values.keys();
+    storage.values.set(key, JSON.stringify({ version: 1, index: 0, savedAt: Date.now(), offsetSeconds: -5 }));
+  } finally {
+    first.restore();
+  }
+
+  const reopened = loadBrowserApp({
+    pdfLoader: () => Promise.resolve(createPdf("First passage. Second passage.")),
+    localStorage: storage,
+  });
+  try {
+    await reopened.trigger("fileInput", "change", { target: { files: [file] } });
+
+    assert.equal(reopened.elements.bookmark.getAttribute("aria-pressed"), "true");
+    assert.equal(reopened.elements.play.disabled, false);
+  } finally {
+    reopened.restore();
   }
 });
 
