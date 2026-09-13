@@ -32,6 +32,7 @@ const {
   convertCardinal,
   detectNumericEntities,
   normalizeSpokenText,
+  normalizeSpokenTextWithSpans,
   convertCodeDigits,
   convertCurrency,
   convertYear,
@@ -1769,6 +1770,41 @@ test("normalizeSpokenText leaves a number beyond this pipeline's convertible ran
   const result = normalizeSpokenText(text);
 
   assert.equal(result, text);
+});
+
+// Normalization rewrites "$400" to "four hundred dollars" and then reports only the rewritten
+// string, so which displayed text became which spoken text is lost. A reader that highlights
+// while speaking needs both halves: the listener hears "four hundred dollars" but must keep
+// seeing "$400". The offsets already exist while normalizing — this reports them instead of
+// discarding them. Spoken offsets index the spoken string, display offsets the original.
+test("normalizeSpokenTextWithSpans reports which displayed text became which spoken text", () => {
+  const text = "Revenue reached $400 million in 2024.";
+
+  const result = normalizeSpokenTextWithSpans(text);
+
+  assert.equal(result.spokenText, normalizeSpokenText(text));
+  assert.deepEqual(
+    result.spans.map((span) => ({
+      display: text.slice(span.displayStart, span.displayEnd),
+      spoken: result.spokenText.slice(span.spokenStart, span.spokenEnd),
+    })),
+    [
+      { display: "$400", spoken: "four hundred dollars" },
+      { display: "2024", spoken: "twenty twenty-four" },
+    ],
+  );
+});
+
+// A number too large for this pipeline to convert is left exactly as written, so nothing was
+// transformed and there is no display-to-spoken relationship to report. Reporting one would make
+// the reader highlight a span that is being read aloud verbatim.
+test("normalizeSpokenTextWithSpans reports no span for text it left unmodified", () => {
+  const oversized = "1".repeat(20);
+
+  const result = normalizeSpokenTextWithSpans(`The price is $${oversized} today.`);
+
+  assert.equal(result.spokenText, `The price is $${oversized} today.`);
+  assert.deepEqual(result.spans, []);
 });
 
 test("normalizeSpokenText leaves text with no numeric-like span byte-for-byte unchanged (spec 006, FR-017, SC-002)", () => {

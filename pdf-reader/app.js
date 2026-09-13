@@ -970,19 +970,50 @@
     return entities;
   }
 
-  function normalizeSpokenText(text) {
+  // Normalizes for speech and reports which displayed span became which spoken span, so a reader
+  // can keep showing "$400" while the audio says "four hundred dollars". The offsets exist while
+  // the spoken string is being assembled; this records them rather than discarding them.
+  //
+  // A span is reported only where the spoken form actually differs from the written one. An
+  // entity the converters declined (a number beyond this pipeline's convertible range) is copied
+  // through verbatim, so there is no display-to-spoken relationship to report for it — reporting
+  // one would mark text as transformed when it is being read aloud exactly as written.
+  //
+  // detectNumericEntities returns entities sorted by start offset and non-overlapping, which is
+  // what lets both sides be walked in a single pass.
+  function normalizeSpokenTextWithSpans(text) {
     const entities = detectNumericEntities(text);
-    if (!entities.length) return text;
+    if (!entities.length) return { spokenText: text, spans: [] };
 
-    let result = "";
+    const spans = [];
+    let spokenText = "";
     let cursor = 0;
+
     entities.forEach((entity) => {
-      result += text.slice(cursor, entity.start);
-      result += entity.spoken;
+      spokenText += text.slice(cursor, entity.start);
+      const spokenStart = spokenText.length;
+      spokenText += entity.spoken;
       cursor = entity.end;
+
+      const displayText = text.slice(entity.start, entity.end);
+      if (entity.spoken === displayText) return;
+
+      spans.push({
+        displayStart: entity.start,
+        displayEnd: entity.end,
+        displayText,
+        spokenStart,
+        spokenEnd: spokenText.length,
+        spokenText: entity.spoken,
+      });
     });
-    result += text.slice(cursor);
-    return result;
+
+    spokenText += text.slice(cursor);
+    return { spokenText, spans };
+  }
+
+  function normalizeSpokenText(text) {
+    return normalizeSpokenTextWithSpans(text).spokenText;
   }
 
   function renderNarrationText(orderedBlocksByPage, policy) {
@@ -1897,6 +1928,7 @@
     convertCardinal,
     detectNumericEntities,
     normalizeSpokenText,
+    normalizeSpokenTextWithSpans,
     convertCodeDigits,
     convertCurrency,
     convertYear,
