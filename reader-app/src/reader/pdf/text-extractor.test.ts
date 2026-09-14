@@ -95,3 +95,29 @@ it("places a text item at its glyph box when the font matrix carries the scale",
   assert.ok(Math.abs((block?.bounds.y ?? 0) - 80 / 792) < 1e-9);
   assert.ok(Math.abs((block?.bounds.height ?? 0) - 12 / 792) < 1e-9);
 });
+
+it("bounds a text item by its font ascent and descent when the style is known", () => {
+  const [block] = itemsToBlocks(
+    1,
+    {
+      items: [
+        {
+          str: "Heading",
+          transform: [13, 0, 0, 13, 100, 500],
+          width: 130,
+          height: 13,
+          fontName: "g_d0_f4",
+        },
+      ],
+      styles: { g_d0_f4: { ascent: 0.764, descent: -0.238 } },
+    },
+    612,
+    792,
+  );
+
+  // Glyphs run from baseline+descent to baseline+ascent, not across the full em box.
+  const expectedTop = 792 - (500 + 0.764 * 13);
+  const expectedHeight = (0.764 + 0.238) * 13;
+  assert.ok(Math.abs((block?.bounds.y ?? 0) - expectedTop / 792) < 1e-9);
+  assert.ok(Math.abs((block?.bounds.height ?? 0) - expectedHeight / 792) < 1e-9);
+});

@@ -9,8 +9,19 @@ interface PdfTextItem {
   hasEOL?: boolean;
 }
 
+interface PdfTextStyle {
+  ascent?: number;
+  descent?: number;
+}
+
 interface PdfTextContent {
   items: unknown[];
+  styles?: Record<string, PdfTextStyle | undefined>;
+}
+
+interface GlyphExtent {
+  rise: number;
+  drop: number;
 }
 
 type Transform = readonly [number, number, number, number, number, number];
@@ -36,10 +47,11 @@ export function itemsToBlocks(
     const widthPdf = item.width ?? horizontalScale * text.length * 0.5;
     const heightPdf = item.height ?? (verticalScale || horizontalScale || 12);
     const fontSize = verticalScale || horizontalScale || heightPdf;
+    const extent = glyphExtent(content.styles?.[item.fontName ?? ""], fontSize, heightPdf);
     const bounds = normalizedItemBounds(
       transform,
       widthPdf,
-      heightPdf,
+      extent,
       viewportTransform,
       pageWidth,
       pageHeight,
@@ -61,10 +73,34 @@ export function itemsToBlocks(
   return blocks;
 }
 
+// pdf.js reports ascent/descent as em fractions of the font size. They describe
+// where glyphs actually sit around the baseline, which is tighter and lower than
+// the full em box the item height spans.
+function glyphExtent(
+  style: PdfTextStyle | undefined,
+  fontSize: number,
+  fallbackHeight: number,
+): GlyphExtent {
+  const ascent = style?.ascent;
+  const descent = style?.descent;
+  const usable =
+    Number.isFinite(ascent) &&
+    Number.isFinite(descent) &&
+    (ascent as number) > 0 &&
+    fontSize > 0;
+  // OWASP A10:2025 Mishandling of Exceptional Conditions - a font without usable
+  // metrics keeps the em box rather than collapsing to an empty rectangle.
+  if (!usable) return { rise: fallbackHeight, drop: 0 };
+  return {
+    rise: (ascent as number) * fontSize,
+    drop: Math.abs(descent as number) * fontSize,
+  };
+}
+
 function normalizedItemBounds(
   itemTransform: number[],
   width: number,
-  height: number,
+  extent: GlyphExtent,
   viewportTransform: Transform,
   pageWidth: number,
   pageHeight: number,
@@ -85,9 +121,10 @@ function normalizedItemBounds(
     pageWidth <= 0 ||
     pageHeight <= 0 ||
     !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
+    !Number.isFinite(extent.rise) ||
+    !Number.isFinite(extent.drop) ||
     width <= 0 ||
-    height <= 0 ||
+    extent.rise + extent.drop <= 0 ||
     [...itemMatrix, ...viewportTransform].some((value) => !Number.isFinite(value))
   ) {
     return null;
@@ -104,12 +141,13 @@ function normalizedItemBounds(
   const unitX = unitVector(spanX[0] - origin[0], spanX[1] - origin[1]);
   const unitY = unitVector(spanY[0] - origin[0], spanY[1] - origin[1]);
   const deviceWidth = width * scaleX;
-  const deviceHeight = height * scaleY;
+  const ascentPoint = offsetPoint(origin, unitY, extent.rise * scaleY);
+  const descentPoint = offsetPoint(origin, unitY, -extent.drop * scaleY);
   const points = [
-    origin,
-    offsetPoint(origin, unitX, deviceWidth),
-    offsetPoint(offsetPoint(origin, unitX, deviceWidth), unitY, deviceHeight),
-    offsetPoint(origin, unitY, deviceHeight),
+    descentPoint,
+    offsetPoint(descentPoint, unitX, deviceWidth),
+    offsetPoint(ascentPoint, unitX, deviceWidth),
+    ascentPoint,
   ];
   const minX = Math.min(...points.map(([x]) => x));
   const minY = Math.min(...points.map(([, y]) => y));
