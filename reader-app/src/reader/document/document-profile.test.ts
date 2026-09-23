@@ -54,7 +54,7 @@ describe("buildDocumentProfile", () => {
       ...page(number, String(number)),
       blocks: [
         block(number, `folio-${number}`, String(number), 0.48, 0.94),
-        block(number, `footer-${number}`, "The Auralis Book", 0.3, 0.94),
+        block(number, `footer-${number}`, "The Evangeline Book", 0.3, 0.94),
         block(number, `body-${number}`, `Body ${number}.`, 0.12, 0.3),
       ],
     }));

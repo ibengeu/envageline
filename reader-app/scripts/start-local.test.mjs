@@ -111,7 +111,7 @@ for argument in "$@"; do url="$argument"; done
 case "$url" in
   *8880/health) test -f "$FAKE_KOKORO_READY" ;;
   *4173/)
-    test -f "$FAKE_READER_READY" && printf 'Auralis'
+    test -f "$FAKE_READER_READY" && printf 'Evangeline'
     ;;
   *) exit 1 ;;
 esac

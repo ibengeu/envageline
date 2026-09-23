@@ -129,7 +129,7 @@ describe("compilePage", () => {
       scanned: false,
       textLength: 200,
       blocks: [
-        block("h", "AURALIS SAMPLE", 0.12, 0.04, 0.5, 0.02, 0.01),
+        block("h", "EVANGELINE SAMPLE", 0.12, 0.04, 0.5, 0.02, 0.01),
         block("t", "Spoken Documents", 0.12, 0.16, 0.7, 0.04, 0.032),
         block(
           "p",
@@ -147,7 +147,7 @@ describe("compilePage", () => {
     const spoken = segments.map((segment) => segment.spokenText).join(" ");
     assert.match(spoken, /twenty-three point seven percent/);
     assert.match(spoken, /Doctor Smith/);
-    assert.equal(spoken.includes("AURALIS SAMPLE"), false);
+    assert.equal(spoken.includes("EVANGELINE SAMPLE"), false);
     assert.equal(/\[\d+\]/.test(spoken), false);
     assert.equal(
       segments.some((segment) => segment.originalText === "1"),

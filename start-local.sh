@@ -94,12 +94,12 @@ wait_for_url() {
 }
 
 # OWASP A02:2025 Security Misconfiguration.
-# Verify the expected Auralis response before reusing a listening port.
+# Verify the expected Evangeline response before reusing a listening port.
 # This prevents the launcher from silently selecting an unrelated service.
 reader_app_is_ready() {
   response=$(curl -fsS --max-time 2 "$reader_url/" 2>/dev/null || true)
   case "$response" in
-    *Auralis*) return 0 ;;
+    *Evangeline*) return 0 ;;
     *) return 1 ;;
   esac
 }

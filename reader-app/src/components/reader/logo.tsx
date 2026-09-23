@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-export function AuralisMark({ className }: { className?: string }) {
+export function EvangelineMark({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 32 32"
@@ -27,11 +27,11 @@ export function AuralisMark({ className }: { className?: string }) {
   );
 }
 
-export function AuralisWordmark({ className }: { className?: string }) {
+export function EvangelineWordmark({ className }: { className?: string }) {
   return (
     <span className={cn("flex items-center gap-2.5", className)}>
-      <AuralisMark />
-      <span className="font-display text-lg tracking-tight text-fg">Auralis</span>
+      <EvangelineMark />
+      <span className="font-display text-lg tracking-tight text-fg">Evangeline</span>
     </span>
   );
 }

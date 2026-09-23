@@ -32,7 +32,7 @@ import { useReaderStore } from "@/reader/core/store";
 import type { ContentFilters } from "@/reader/narration/reading-profile";
 import { SKIP_INTERVALS } from "@/reader/storage/settings";
 import { shouldHandleShortcut } from "./input-guards";
-import { AuralisWordmark } from "./logo";
+import { EvangelineWordmark } from "./logo";
 
 const FILTER_OPTIONS: Array<[Exclude<keyof ContentFilters, "footnotes">, string]> = [
   ["skipPublisherMatter", "Copyright, legal & publisher's notes"],
@@ -127,7 +127,7 @@ export function ReaderApp() {
           >
             <PanelLeft />
           </Button>
-          <AuralisWordmark className="hidden sm:flex" />
+          <EvangelineWordmark className="hidden sm:flex" />
           <p className="min-w-0 flex-1 truncate text-sm text-muted">
             {documentSlice.model.metadata.title || documentSlice.model.filename}
           </p>

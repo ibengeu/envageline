@@ -24,7 +24,7 @@ function wrap(text: string, font: { widthOfTextAtSize: (t: string, s: number) =>
 export async function createSamplePdf(): Promise<File> {
   const pdf = await PDFDocument.create();
   pdf.setTitle("The Shape of Spoken Documents");
-  pdf.setAuthor("Auralis");
+  pdf.setAuthor("Evangeline");
   pdf.setSubject("A sample essay for on-device PDF listening");
   const serif = await pdf.embedFont(StandardFonts.TimesRoman);
   const serifBold = await pdf.embedFont(StandardFonts.TimesRomanBold);
@@ -37,7 +37,7 @@ export async function createSamplePdf(): Promise<File> {
   const pages = [pdf.addPage([pageWidth, pageHeight]), pdf.addPage([pageWidth, pageHeight]), pdf.addPage([pageWidth, pageHeight]), pdf.addPage([pageWidth, pageHeight])];
 
   const header = (page: (typeof pages)[0], number: number) => {
-    page.drawText("AURALIS  ·  SAMPLE ESSAY", {
+    page.drawText("EVANGELINE  ·  SAMPLE ESSAY", {
       x: left,
       y: pageHeight - 42,
       size: 9,
@@ -98,7 +98,7 @@ export async function createSamplePdf(): Promise<File> {
     "Documents were never written to be heard. A page is a map of attention: columns, headings, running headers, and the quiet machinery of citations [12]. When we ask a machine to read that map aloud, the first problem is not voice quality. It is sequence.",
     "Dr. Rivera has argued that a 500-page report should not require 500 pages of preprocessing before the first sentence is spoken (Smith, 2024). The company that shipped the prototype reported $12.4M in Q3, a 23.7% YoY gain, while still keeping the entire pipeline on-device.",
     "This sample is designed to exercise that pipeline. You should hear the body of the essay, not the running header, not the page number, and not the bracketed references. Currency, percentages, and titles should sound like speech rather than typography.",
-    "If you clicked into this document from Auralis, press play. The highlight will follow each sentence. Skip forward. Change the voice. The next pages are already being prepared while you listen.",
+    "If you clicked into this document from Evangeline, press play. The highlight will follow each sentence. Skip forward. Change the voice. The next pages are already being prepared while you listen.",
   ]);
 
   header(pages[1]!, 2);
@@ -141,7 +141,7 @@ export async function createSamplePdf(): Promise<File> {
   const colWidth = 220;
   const leftCol = [
     "Reading order is the difference between a document and a jumble. Scientific papers often place two arguments side by side. A naive extractor reads across the gutter and produces nonsense.",
-    "Auralis clusters text by column, then reads the left column completely before the right. Alpha one. Alpha two. Then beta. The highlight still sits on the geometry of the page, so your eye can follow even when the voice has moved to another region.",
+    "Evangeline clusters text by column, then reads the left column completely before the right. Alpha one. Alpha two. Then beta. The highlight still sits on the geometry of the page, so your eye can follow even when the voice has moved to another region.",
     "The same reconstruction is used for magazines, annual reports, and manuals. When the gutter is unclear, the compiler falls back to simple top-to-bottom order rather than inventing structure.",
   ];
   const rightCol = [
@@ -175,7 +175,7 @@ export async function createSamplePdf(): Promise<File> {
   drawParagraphs(pages[3]!, pageHeight - 120, [
     "If this page is being read aloud, the experiment worked. Headers were skipped. Page numbers were skipped. Citations were removed from speech but not from the original text, which remains available for highlighting and search.",
     "Future versions may add on-device OCR for scanned pages, local neural voices, and chapter detection. None of those features should require a rewrite of the interface, the PDF engine, or the speech engine. The seams are intentional.",
-    "Until then: open another document. Auralis will start talking as soon as the current page is ready.",
+    "Until then: open another document. Evangeline will start talking as soon as the current page is ready.",
   ]);
   pages[3]!.drawText("References", {
     x: left,
@@ -192,5 +192,5 @@ export async function createSamplePdf(): Promise<File> {
   const bytes = await pdf.save();
   const copy = new Uint8Array(bytes);
   const blob = new Blob([copy], { type: "application/pdf" });
-  return new File([blob], "auralis-sample-essay.pdf", { type: "application/pdf" });
+  return new File([blob], "evangeline-sample-essay.pdf", { type: "application/pdf" });
 }

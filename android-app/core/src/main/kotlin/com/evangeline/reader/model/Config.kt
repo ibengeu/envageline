@@ -1,6 +1,6 @@
 package com.evangeline.reader.model
 
-const val APP_NAME = "Auralis"
+const val APP_NAME = "Evangeline"
 const val APP_TAGLINE = "Listen to any PDF."
 
 /** Bumped when the narration pipeline changes enough to invalidate cached passages. */

@@ -1,4 +1,4 @@
-export const APP_NAME = "Auralis";
+export const APP_NAME = "Evangeline";
 export const APP_TAGLINE = "Listen to any PDF.";
 
 export const PROCESSING_VERSION = 8;
@@ -19,6 +19,8 @@ export const MIN_RATE = 0.5;
 export const MAX_RATE = 3;
 export const RATE_STEP = 0.05;
 export const RATE_PRESETS = [0.75, 1, 1.25, 1.5, 2] as const;
+// Kept from the app's earlier name: renaming the IndexedDB database would
+// orphan every listener's saved library, progress and bookmarks.
 export const DB_NAME = "auralis";
 export const DB_VERSION = 2;
 export const MAX_CACHED_DOCUMENTS = 6;

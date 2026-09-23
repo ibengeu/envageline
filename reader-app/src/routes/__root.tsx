@@ -8,7 +8,7 @@ import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { AuthProvider } from "@/lib/auth/provider";
 import appCss from "../styles.css?url";
 
-const APP_NAME = "Auralis";
+const APP_NAME = "Evangeline";
 
 export const Route = createRootRoute({
   head: () => ({

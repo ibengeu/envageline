@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { openLocalFile, openRecent, openSample } from "@/reader/controller";
 import { useReaderStore } from "@/reader/core/store";
 import { cn } from "@/lib/utils";
-import { AuralisMark } from "./logo";
+import { EvangelineMark } from "./logo";
 
 export function Landing() {
   const recents = useReaderStore((s) => s.recents);
@@ -34,8 +34,8 @@ export function Landing() {
       />
       <header className="relative mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-5 sm:px-8">
         <span className="flex items-center gap-2.5">
-          <AuralisMark />
-          <span className="font-display text-lg tracking-tight">Auralis</span>
+          <EvangelineMark />
+          <span className="font-display text-lg tracking-tight">Evangeline</span>
         </span>
         <p className="hidden text-xs text-muted sm:block">On-device PDF listening</p>
       </header>
@@ -140,10 +140,10 @@ export function Landing() {
                 event.target.value = "";
               }}
             />
-            <AuralisMark className="size-12" />
+            <EvangelineMark className="size-12" />
             <p className="mt-5 font-display text-2xl tracking-tight">Drop a PDF here</p>
             <p className="mt-2 max-w-xs text-sm leading-relaxed text-muted">
-              Local files only. Auralis extracts text, rebuilds reading order, and
+              Local files only. Evangeline extracts text, rebuilds reading order, and
               starts speaking as soon as the first page is ready.
             </p>
           </label>

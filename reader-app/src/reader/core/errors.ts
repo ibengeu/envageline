@@ -18,5 +18,5 @@ export function appError(code: ErrorCode, cause?: unknown): AppError {
 }
 
 export function logError(code: ErrorCode, cause?: unknown): void {
-  console.warn(`[Auralis:${code}]`, cause ?? "");
+  console.warn(`[Evangeline:${code}]`, cause ?? "");
 }
