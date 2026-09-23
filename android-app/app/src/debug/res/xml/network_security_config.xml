@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG ONLY. This file lives in src/debug/ and is absent from release builds.
+
+  OWASP A02:2025 Security Misconfiguration - the developer-only narration
+  endpoint speaks plain HTTP to a loopback server. Cleartext is permitted for
+  loopback and nothing else, so no other destination can receive document text
+  even during development (A08, FR-017).
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

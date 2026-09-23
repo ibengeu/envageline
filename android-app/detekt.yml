@@ -1,0 +1,11 @@
+# Constitution Principle V / SC-006: cyclomatic complexity 10 or less per
+# function. A documented exception goes directly above the function.
+build:
+  maxIssues: 0
+
+complexity:
+  active: true
+  CyclomaticComplexMethod:
+    active: true
+    threshold: 11
+    ignoreSingleWhenExpression: false

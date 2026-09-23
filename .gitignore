@@ -22,9 +22,22 @@ __pycache__/
 
 # Node
 node_modules/
+dist/
+build/
+coverage/
+*.log
+.env*
+
+# Temporary and editor files
+*.tmp
+*.swp
+Thumbs.db
 
 # Kokoro model files (large, downloaded at runtime)
 pdf-reader/kokoro-server/models/
+
+# Generated local OCR language assets. `npm run prepare:ocr` restores them.
+reader-app/public/ocr/
 
 # Project docs / design artifacts (internal only)
 docs/
@@ -32,3 +45,22 @@ design-artifacts/
 
 # Docker
 *.override.yml
+
+# Android port
+android-app/build/
+android-app/*/build/
+android-app/.gradle/
+android-app/local.properties
+android-app/out/
+*.class
+*.iml
+.kotlin/
+# Build-output jars only. The Gradle wrapper jar must stay tracked: it is how
+# the build bootstraps on a machine with no Gradle installed.
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+!**/gradle/wrapper/gradle-wrapper.jar
+
+# reader-app build output and tooling locks
+reader-app/.vercel/
+reader-app/.node_modules.lock

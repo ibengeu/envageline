@@ -121,3 +121,68 @@ it("bounds a text item by its font ascent and descent when the style is known", 
   assert.ok(Math.abs((block?.bounds.y ?? 0) - expectedTop / 792) < 1e-9);
   assert.ok(Math.abs((block?.bounds.height ?? 0) - expectedHeight / 792) < 1e-9);
 });
+
+it("records each block's position in the raw item array, skipping blanks without shifting it", () => {
+  const blocks = itemsToBlocks(
+    1,
+    {
+      items: [
+        { str: "First", transform: [1, 0, 0, 1, 10, 20], width: 30, height: 10 },
+        { str: "  ", transform: [1, 0, 0, 1, 10, 40], width: 5, height: 10 },
+        { str: "Third", transform: [1, 0, 0, 1, 10, 60], width: 30, height: 10 },
+      ],
+    },
+    200,
+    100,
+  );
+
+  assert.deepEqual(
+    blocks.map((block) => ({ text: block.text, itemIndex: block.itemIndex })),
+    [
+      { text: "First", itemIndex: 0 },
+      { text: "Third", itemIndex: 2 },
+    ],
+  );
+});
+
+it("keys a block's id on its raw item position, so a rendered text-layer span can be joined to it by index alone", () => {
+  const blocks = itemsToBlocks(
+    3,
+    {
+      items: [
+        { str: "First", transform: [1, 0, 0, 1, 10, 20], width: 30, height: 10 },
+        { str: "  ", transform: [1, 0, 0, 1, 10, 40], width: 5, height: 10 },
+        { str: "Third", transform: [1, 0, 0, 1, 10, 60], width: 30, height: 10 },
+      ],
+    },
+    200,
+    100,
+  );
+
+  assert.deepEqual(
+    blocks.map((block) => block.id),
+    ["p3-b0", "p3-b2"],
+  );
+});
+
+it("preserves direction, line endings, and the source transform", () => {
+  const [block] = itemsToBlocks(
+    1,
+    {
+      items: [{
+        str: "مرحبا",
+        dir: "rtl",
+        hasEOL: true,
+        transform: [12, 0, 0, 12, 72, 700],
+        width: 80,
+        height: 12,
+      }],
+    },
+    612,
+    792,
+  );
+
+  assert.equal(block?.direction, "rtl");
+  assert.equal(block?.hasEOL, true);
+  assert.deepEqual(block?.transform, [12, 0, 0, 12, 72, 700]);
+});

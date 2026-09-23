@@ -14,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from kokoro_onnx import Kokoro
 from pydantic import BaseModel, Field
 
+from integrity import ensure_verified
+
 
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
@@ -21,6 +23,10 @@ VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/mode
 MODEL_DIR = Path(os.getenv("KOKORO_MODEL_DIR", "/models"))
 MODEL_PATH = MODEL_DIR / "kokoro-v1.0.onnx"
 VOICES_PATH = MODEL_DIR / "voices-v1.0.bin"
+# Pinned on first use from the v1.0 release files (the release publishes no
+# checksums of its own). Update both together when bumping the model.
+MODEL_SHA256 = "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5"
+VOICES_SHA256 = "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
 DEFAULT_VOICE = os.getenv("KOKORO_DEFAULT_VOICE", "af_heart")
 # Serving the reader's static files is optional: in the container it is baked in at
 # /app/pdf-reader, but running this server directly on a workstation (no Docker) has no such
@@ -67,8 +73,9 @@ class SpeechRequest(BaseModel):
     lang: str = "en-us"
 
 
-def download_if_missing(url: str, path: Path) -> None:
+def download_if_missing(url: str, path: Path, sha256: str) -> None:
     if path.exists() and path.stat().st_size > 0:
+        ensure_verified(path, sha256)
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,13 +83,14 @@ def download_if_missing(url: str, path: Path) -> None:
     print(f"Downloading {path.name}...")
     urllib.request.urlretrieve(url, tmp_path)
     tmp_path.replace(path)
+    ensure_verified(path, sha256)
 
 
 def get_kokoro() -> Kokoro:
     global _kokoro
     if _kokoro is None:
-        download_if_missing(MODEL_URL, MODEL_PATH)
-        download_if_missing(VOICES_URL, VOICES_PATH)
+        download_if_missing(MODEL_URL, MODEL_PATH, MODEL_SHA256)
+        download_if_missing(VOICES_URL, VOICES_PATH, VOICES_SHA256)
         _kokoro = Kokoro(str(MODEL_PATH), str(VOICES_PATH))
     return _kokoro
 

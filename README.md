@@ -9,7 +9,7 @@ Drop a PDF into the browser. The app extracts the text, splits it into sentences
 Two voice options:
 
 - **Browser voices** — uses the Web Speech API built into Chrome/Safari/Firefox. Zero setup, zero network traffic.
-- **Local Kokoro** — uses the [Kokoro ONNX](https://github.com/hexgrad/kokoro) model running in Docker on your machine. Near-natural voice quality. Text goes only to localhost.
+- **Local Kokoro** — uses the [Kokoro ONNX](https://github.com/hexgrad/kokoro) model on your machine. Near-natural voice quality. Text goes only to localhost.
 
 ## Quick start
 
@@ -20,6 +20,20 @@ docker compose up
 Open **http://localhost:8880** — the reader and the TTS server are served from the same container.
 
 The first time you select Local Kokoro and load voices, the model downloads automatically (~354 MB, one-time). After that it's cached in a Docker volume.
+
+### Local development without Docker
+
+Run this command from the repository root:
+
+```bash
+./start-local.sh
+```
+
+The script starts the Kokoro server at **http://127.0.0.1:8880** and the reader app at **http://127.0.0.1:4173**. If port `4173` serves another application, the script uses **http://127.0.0.1:4175**. The first run creates a local Python environment, installs the pinned Kokoro dependencies, and downloads the model files when the server first loads them.
+
+Press **Ctrl-C** to stop the processes started by the script. The script sends a graceful stop signal, waits briefly, and force-stops any remaining child process. It does not stop services that were already running before the script started.
+
+The script writes logs to `/tmp/evangeline-kokoro.log` and `/tmp/evangeline-reader.log` by default. Set `EVANGELINE_LOG_DIR` to change the log directory.
 
 ## How it works
 

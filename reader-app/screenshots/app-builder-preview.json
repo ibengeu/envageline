@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Auralis",
+      "hasCanvas": false,
+      "bodyTextLen": 446,
+      "bodyTextHash": "9b07968895e61506d47dfa8a178d0580ee055b86b342fe5b1ac2eea0f56b9648",
+      "bodyTextPrefix": "Auralis On-device PDF listening AUDIBLE READER Listen to any PDF",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Auralis",
+      "hasCanvas": false,
+      "bodyTextLen": 422,
+      "bodyTextHash": "dddb87f7e5aee463c60e72cc440f4e2d59fbd18c0f98eaba122ef3ac97acb820",
+      "bodyTextPrefix": "Auralis AUDIBLE READER Listen to any PDF. Open a document, press",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}

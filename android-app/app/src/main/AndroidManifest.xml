@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      No storage permission is declared. Documents are opened through the system
+      file picker, which grants access to the chosen file only (A01, FR-001).
+
+      No INTERNET permission is declared either: narration is produced on the
+      device, so document text has no way to leave it (FR-016, A08).
+    -->
+
+    <application
+        android:label="Evangeline Reader"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="false"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
+
+        <!--
+          OWASP A01:2025 Broken Access Control - the launcher is the only
+          exported component. Everything else is reachable in-process only.
+        -->
+        <activity
+            android:name=".ui.ReaderActivity"
+            android:exported="true"
+            android:label="Evangeline Reader">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

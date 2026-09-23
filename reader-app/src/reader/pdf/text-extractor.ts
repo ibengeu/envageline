@@ -1,7 +1,8 @@
-import type { DocumentBlock } from "../core/types";
+import type { DocumentBlock } from "../core/types.ts";
 
 interface PdfTextItem {
   str?: string;
+  dir?: string;
   transform?: number[];
   width?: number;
   height?: number;
@@ -36,8 +37,7 @@ export function itemsToBlocks(
   viewportTransform: Transform = DEFAULT_VIEWPORT_TRANSFORM(pageHeight),
 ): DocumentBlock[] {
   const blocks: DocumentBlock[] = [];
-  let index = 0;
-  for (const raw of content.items) {
+  for (const [itemIndex, raw] of content.items.entries()) {
     const item = raw as PdfTextItem;
     const text = (item.str ?? "").replace(/\u00a0/g, " ");
     if (!text.trim()) continue;
@@ -58,7 +58,7 @@ export function itemsToBlocks(
     );
     if (!bounds) continue;
     blocks.push({
-      id: `p${pageNumber}-b${index}`,
+      id: `p${pageNumber}-b${itemIndex}`,
       page: pageNumber,
       text,
       bounds: {
@@ -67,8 +67,11 @@ export function itemsToBlocks(
       fontSize: pageHeight === 0 ? fontSize : fontSize / pageHeight,
       fontName: item.fontName,
       source: "pdf-text",
+      itemIndex,
+      direction: item.dir,
+      hasEOL: item.hasEOL,
+      transform: [...transform],
     });
-    index += 1;
   }
   return blocks;
 }
@@ -88,8 +91,7 @@ function glyphExtent(
     Number.isFinite(descent) &&
     (ascent as number) > 0 &&
     fontSize > 0;
-  // OWASP A10:2025 Mishandling of Exceptional Conditions - a font without usable
-  // metrics keeps the em box rather than collapsing to an empty rectangle.
+  // A font without usable metrics keeps the em box instead of an empty rectangle.
   if (!usable) return { rise: fallbackHeight, drop: 0 };
   return {
     rise: (ascent as number) * fontSize,
@@ -113,8 +115,8 @@ function normalizedItemBounds(
     itemTransform[4] ?? 0,
     itemTransform[5] ?? 0,
   ];
-  // OWASP A02:2025 Security Misconfiguration.
-  // Reject non-finite PDF transforms before they can create invalid CSS geometry.
+  // OWASP A04:2025 Insecure Design.
+  // Validate untrusted PDF geometry before it can create invalid layout values.
   if (
     !Number.isFinite(pageWidth) ||
     !Number.isFinite(pageHeight) ||

@@ -1,0 +1,163 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Newsreader", "Iowan Old Style", Palatino, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-bg: #0c0c0d;
+  --color-surface: #161617;
+  --color-surface-2: #1e1e20;
+  --color-fg: #f3f1ec;
+  --color-muted: #8b8a86;
+  --color-subtle: #6a6966;
+  --color-border: #2a2a2c;
+  --color-accent: #c5c9d0;
+  --color-accent-fg: #0c0c0d;
+  --color-highlight: rgb(197 201 208 / 0.32);
+  --color-danger: #c45c4a;
+  --color-paper: #f3f1ec;
+  --color-ink: #141311;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-2xl: 32px;
+
+  --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.08);
+  --shadow-border-hover: 0 0 0 1px rgb(255 255 255 / 0.13);
+  --shadow-page:
+    0 0 0 1px rgb(255 255 255 / 0.04), 0 18px 40px -24px rgb(0 0 0 / 0.7);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html,
+  body,
+  #app {
+    min-height: 100%;
+    background: var(--color-bg);
+    color: var(--color-fg);
+  }
+
+  body {
+    font-family: var(--font-sans);
+    letter-spacing: -0.011em;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-accent) 35%, transparent);
+    color: var(--color-fg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.stagger-in > * {
+  animation: rise-in 400ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.stagger-in > *:nth-child(1) {
+  animation-delay: 40ms;
+}
+.stagger-in > *:nth-child(2) {
+  animation-delay: 90ms;
+}
+.stagger-in > *:nth-child(3) {
+  animation-delay: 140ms;
+}
+.stagger-in > *:nth-child(4) {
+  animation-delay: 190ms;
+}
+.stagger-in > *:nth-child(5) {
+  animation-delay: 240ms;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.highlight-box {
+  position: absolute;
+  border-radius: 3px;
+  background: var(--color-highlight);
+  box-shadow: 0 0 0 1px rgb(197 201 208 / 0.18);
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+
+/* Preview of the sentence a click would select - lighter than the
+   currently-narrating highlight so the two are never mistaken for each other. */
+.highlight-box-hover {
+  background: rgb(197 201 208 / 0.14);
+  box-shadow: 0 0 0 1px rgb(197 201 208 / 0.28);
+}
+
+/* Minimal subset of pdf.js's own .textLayer rules (pdfjs-dist/web/pdf_viewer.css) -
+   just enough to keep pdf.js's TextLayer spans invisible, correctly positioned,
+   and selectable, without pulling in the annotation/forms/image layers that
+   stylesheet also ships. */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  text-size-adjust: none;
+  transform-origin: 0 0;
+}
+
+.textLayer span,
+.textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+
+.pdf-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.pdf-scroll::-webkit-scrollbar-thumb {
+  background: #2a2a2c;
+  border-radius: 99px;
+  border: 2px solid #0c0c0d;
+}

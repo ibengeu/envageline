@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evangeline Feature Backlog</title>
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --surface: #ffffff;
+    --surface-2: #eef1f3;
+    --text: #14181b;
+    --muted: #5b6b72;
+    --line: #dbe2e6;
+    --accent: #245e73;
+    --accent-strong: #174454;
+    --accent-tint: rgba(36, 94, 115, 0.1);
+    --good: #2f7a4f;
+    --good-tint: rgba(47, 122, 79, 0.12);
+    --warn: #9a6a12;
+    --warn-tint: rgba(154, 106, 18, 0.12);
+    --out: #8a3b3b;
+    --out-tint: rgba(138, 59, 59, 0.1);
+    --font-serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, ui-serif, serif;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #07090b;
+      --surface: #12161a;
+      --surface-2: #171c21;
+      --text: #eef2f4;
+      --muted: #93a3aa;
+      --line: #262e33;
+      --accent: #7eb7c8;
+      --accent-strong: #b5dfeb;
+      --accent-tint: rgba(126, 183, 200, 0.14);
+      --good: #6fce93;
+      --good-tint: rgba(111, 206, 147, 0.14);
+      --warn: #e0b155;
+      --warn-tint: rgba(224, 177, 85, 0.14);
+      --out: #e08a8a;
+      --out-tint: rgba(224, 138, 138, 0.12);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #07090b;
+    --surface: #12161a;
+    --surface-2: #171c21;
+    --text: #eef2f4;
+    --muted: #93a3aa;
+    --line: #262e33;
+    --accent: #7eb7c8;
+    --accent-strong: #b5dfeb;
+    --accent-tint: rgba(126, 183, 200, 0.14);
+    --good: #6fce93;
+    --good-tint: rgba(111, 206, 147, 0.14);
+    --warn: #e0b155;
+    --warn-tint: rgba(224, 177, 85, 0.14);
+    --out: #e08a8a;
+    --out-tint: rgba(224, 138, 138, 0.12);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 28px 16px 64px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  header.top { margin-bottom: 28px; }
+  .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 0 0 8px;
+  }
+  h1 {
+    font-family: var(--font-serif);
+    font-size: clamp(24px, 4vw, 32px);
+    margin: 0 0 10px;
+    color: var(--text);
+  }
+  .dek {
+    color: var(--muted);
+    max-width: 640px;
+    margin: 0;
+    font-size: 14.5px;
+  }
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 14px;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .source-link a { color: var(--accent-strong); text-decoration: none; border-bottom: 1px solid var(--accent-tint); }
+
+  .thesis {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 22px 0 30px;
+    font-family: var(--font-serif);
+    font-size: 15.5px;
+    color: var(--text);
+  }
+  .thesis b { color: var(--accent-strong); }
+
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 30px;
+  }
+  @media (max-width: 720px) {
+    .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    min-width: 0;
+  }
+  .stat .n { font-size: 22px; font-weight: 650; font-family: var(--font-serif); }
+  .stat .l { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
+  .stat.good .n { color: var(--good); }
+  .stat.warn .n { color: var(--warn); }
+  .stat.out .n { color: var(--out); }
+  .stat.accent .n { color: var(--accent); }
+
+  section.group { margin-bottom: 36px; }
+  .group-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .group-head h2 {
+    font-family: var(--font-serif);
+    font-size: 19px;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .badge {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .badge.p0 { background: var(--good-tint); color: var(--good); }
+  .badge.p1 { background: var(--accent-tint); color: var(--accent-strong); }
+  .badge.p2 { background: var(--warn-tint); color: var(--warn); }
+  .badge.no { background: var(--out-tint); color: var(--out); }
+  .group-note { font-size: 13px; color: var(--muted); margin: 0 0 14px; max-width: 720px; }
+
+  .table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  table { width: 100%; border-collapse: collapse; min-width: 640px; }
+  thead th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    padding: 10px 14px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+    font-size: 13.5px;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+  td.feature { font-weight: 600; min-width: 160px; }
+  td.why { color: var(--muted); max-width: 340px; }
+  td.effort, td.status { white-space: nowrap; }
+
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+  .pill.xs { background: var(--good-tint); color: var(--good); }
+  .pill.s { background: var(--accent-tint); color: var(--accent-strong); }
+  .pill.m { background: var(--warn-tint); color: var(--warn); }
+  .pill.l { background: var(--out-tint); color: var(--out); }
+
+  .st {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .st::before {
+    content: "";
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--line);
+    flex-shrink: 0;
+  }
+  .st.gap::before { background: var(--warn); }
+  .st.missing::before { background: var(--out); }
+  .st.done::before { background: var(--good); }
+  .st.drift::before { background: var(--accent); }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    background: var(--surface-2);
+    padding: 1px 5px;
+    border-radius: 4px;
+    word-break: break-word;
+  }
+
+  .descope-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 8px;
+  }
+  .descope-item {
+    background: var(--out-tint);
+    color: var(--out);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    min-width: 0;
+  }
+  .descope-item span {
+    display: block;
+    font-weight: 400;
+    color: var(--muted);
+    font-size: 11.5px;
+    margin-top: 3px;
+  }
+
+  footer.note {
+    margin-top: 40px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <p class="eyebrow">Product backlog · sourced from Notion</p>
+    <h1>Evangeline — from plan to punch list</h1>
+    <p class="dek">Broken out from the "Evangeline — Executive Product Plan" doc, cross-checked against what's actually in <code>pdf-reader/</code> today. Grouped by effort so the cheapest wins come first.</p>
+    <p class="source-link">📄 Source: <a href="https://app.notion.com/p/3d8a5d68fcdd81ba8047cb4dd85c3493" target="_blank" rel="noopener">Evangeline — Executive Product Plan</a> (Notion, edited today)</p>
+  </header>
+
+  <div class="thesis">
+    <b>Product rule:</b> Evangeline does one thing — turns PDFs into good listening experiences. The moat isn't TTS, it's the <b>document-to-listening pipeline</b> deciding what should be spoken, skipped, reconstructed, or paused around.
+  </div>
+
+  <div class="stat-row">
+    <div class="stat good"><div class="n">6</div><div class="l">Low-hanging fruit</div></div>
+    <div class="stat accent"><div class="n">5</div><div class="l">Bigger bets</div></div>
+    <div class="stat warn"><div class="n">3</div><div class="l">Scope drift to resolve</div></div>
+    <div class="stat out"><div class="n">11</div><div class="l">Explicitly out of scope</div></div>
+  </div>
+
+  <section class="group">
+    <div class="group-head">
+      <h2>🍇 Low-hanging fruit</h2>
+      <span class="badge p0">Start here</span>
+    </div>
+    <p class="group-note">Small, isolated additions to the existing <code>normalizePdfText</code> / chunking pipeline in <code>app.js</code>. Each is a self-contained regex or detection pass — no architecture change, no UI work.</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Feature</th><th>Why it's cheap</th><th>Current status</th><th>Effort</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="feature">Suppress raw URLs</td>
+            <td class="why">Single regex pass before chunking. No detection ambiguity — URLs have a fixed shape.</td>
+            <td class="status"><span class="st missing">Not implemented</span></td>
+            <td class="effort"><span class="pill xs">XS</span></td>
+          </tr>
+          <tr>
+            <td class="feature">Suppress citation markers <code>[12]</code></td>
+            <td class="why">Same shape as URL suppression — one more regex in <code>normalizePdfText</code>.</td>
+            <td class="status"><span class="st missing">Not implemented</span></td>
+            <td class="effort"><span class="pill xs">XS</span></td>
+          </tr>
+          <tr>
+            <td class="feature">Strip confidently-detected page numbers</td>
+            <td class="why">Standalone numeric lines at paragraph boundaries are a narrow, testable pattern.</td>
+            <td class="status"><span class="st missing">Not implemented</span></td>
+            <td class="effort"><span class="pill s">S</span></td>
+          </tr>
+          <tr>
+            <td class="feature">Remove repeated headers/footers</td>
+            <td class="why">Detect lines repeating identically across page boundaries in the raw extraction; drop duplicates.</td>
+            <td class="status"><span class="st missing">Not implemented</span></td>
+            <td class="effort"><span class="pill s">S</span></td>
+          </tr>
+          <tr>
+            <td class="feature">"Evangeline forgets your document" messaging</td>
+            <td class="why">Copy-only change to <code>index.html</code>/status line — the no-history behavior already exists, it's just not communicated.</td>
+            <td class="status"><span class="st gap">Behavior exists, not stated</span></td>
+            <td class="effort"><span class="pill xs">XS</span></td>
+          </tr>
+          <tr>
+            <td class="feature">Show local-processing flow (<code>PDF → Browser → Speaker</code>)</td>
+            <td class="why">Small UI addition near the drop zone. Reinforces the privacy claim that's already true architecturally.</td>
+            <td class="status"><span class="st gap">True today, not shown</span></td>
+            <td class="effort"><span class="pill xs">XS</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="group">
+    <div class="group-head">
+      <h2>🧭 Bigger bets</h2>
+      <span class="badge p1">Next</span>
+    </div>
+    <p class="group-note">Real detection logic or UI restructuring. Worth sequencing after the quick regex wins land and prove out the pipeline approach.</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Feature</th><th>Why it's harder</th><th>Current status</th><th>Effort</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="feature">Heading detection + natural pauses</td>
+            <td class="why">Needs font-size/style signal from the PDF layer, not just text — heavier than a text-only regex.</td>
+            <td class="status"><span class="st missing">Not implemented</span></td>
+            <td class="effort"><span class="pill m">M</span></td>
+          </tr>
+          <tr>
+            <td class="feature">References/bibliography detection + stop-before option</td>
+            <td class="why">Requires a heuristic classifier (heading text match + density of citation-like lines), then a playback branch.</td>
+            <td class="status"><span class="st missing">Not implemented</span></td>
+            <td class="effort"><span class="pill m">M</span></td>
+          </tr>
+          <tr>
+            <td class="feature">Separate handling for figure/table captions</td>
+            <td class="why">Needs layout-aware extraction to distinguish captions from body text, plus a distinct read-aloud treatment.</td>
+            <td class="status"><span class="st missing">Not implemented</span></td>
+            <td class="effort"><span class="pill m">M</span></td>
+          </tr>
+          <tr>
+            <td class="feature">Safe fallback for tables/equations/malformed text</td>
+            <td class="why">Needs a "don't read this literally" detector plus a spoken placeholder — a new code path, not a filter.</td>
+            <td class="status"><span class="st missing">Not implemented</span></td>
+            <td class="effort"><span class="pill m">M</span></td>
+          </tr>
+          <tr>
+            <td class="feature">Minimal player UI (voice/pitch/rate → advanced settings)</td>
+            <td class="why">Restructuring existing markup/CSS, not new logic — but touches the primary screen, so needs care.</td>
+            <td class="status"><span class="st drift">Inverse of plan today</span></td>
+            <td class="effort"><span class="pill m">M</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="group">
+    <div class="group-head">
+      <h2>⚠️ Scope drift to resolve</h2>
+      <span class="badge p2">Decide</span>
+    </div>
+    <p class="group-note">The shipped app already does things the plan says v1 should <i>not</i> do. Worth a deliberate call — keep and update the plan, or trim to match it — rather than leaving the mismatch implicit.</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Feature</th><th>What the plan says</th><th>What's shipped</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="feature">EPUB support</td>
+            <td class="why">"Explicitly out of scope for v1" — plan wants PDF-only focus.</td>
+            <td class="status"><span class="st drift"><code>epub-engine.js</code> + full extraction pipeline exists</span></td>
+          </tr>
+          <tr>
+            <td class="feature">Voice / rate / pitch controls</td>
+            <td class="why">Plan wants these moved out of the primary interface into "advanced settings."</td>
+            <td class="status"><span class="st drift">Currently in main <code>document-controls</code> panel</span></td>
+          </tr>
+          <tr>
+            <td class="feature">Document stats panel (pages/words/filename)</td>
+            <td class="why">Plan's Minimal Player UI lists only play/pause/skip/speed/section/time-remaining.</td>
+            <td class="status"><span class="st drift">Extra <code>stats</code> block shown by default</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="group">
+    <div class="group-head">
+      <h2>🚫 Explicitly out of scope</h2>
+      <span class="badge no">Do not build</span>
+    </div>
+    <p class="group-note">Per the plan, each of these expands product surface without improving the core job: make PDFs sound good.</p>
+    <div class="descope-grid">
+      <div class="descope-item">AI summaries</div>
+      <div class="descope-item">Chat with PDF</div>
+      <div class="descope-item">OCR</div>
+      <div class="descope-item">DOCX / websites<span>EPUB already shipped — see drift above</span></div>
+      <div class="descope-item">Accounts</div>
+      <div class="descope-item">Cloud sync</div>
+      <div class="descope-item">Document libraries</div>
+      <div class="descope-item">Notes &amp; highlighting</div>
+      <div class="descope-item">Hundreds of voices</div>
+      <div class="descope-item">Social features</div>
+      <div class="descope-item">General AI assistant features</div>
+    </div>
+  </section>
+
+  <footer class="note">
+    Every proposed feature should pass one test — <i>does this make a PDF better to listen to?</i> Phase 2 ideas (academic-paper mode, time-boxed listening, proofreading mode, offline PWA, local integration API) are intentionally left out of this list until v1's Listening Compiler ships.
+  </footer>
+
+</div>
+</body>
+</html>
