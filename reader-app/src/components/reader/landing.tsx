@@ -28,12 +28,12 @@ export function Landing() {
   }
 
   return (
-    <div className="relative min-h-dvh overflow-hidden bg-bg text-fg">
+    <div className="relative flex min-h-dvh flex-col overflow-hidden bg-bg text-fg">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),transparent)]"
       />
-      <header className="relative mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-5 sm:px-8">
+      <header className="relative mx-auto flex w-full max-w-6xl shrink-0 items-center justify-between px-5 py-5 sm:px-8">
         <span className="flex items-center gap-2.5">
           <EvangelineMark />
           <span className="font-display text-lg tracking-tight">Evangeline</span>
@@ -43,7 +43,7 @@ export function Landing() {
           </p>
       </header>
 
-      <main className="relative mx-auto grid w-full max-w-6xl gap-10 px-5 pb-16 pt-6 sm:px-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-center lg:gap-16 lg:pt-10">
+      <main className="relative mx-auto grid w-full max-w-6xl flex-1 content-center gap-10 px-5 py-10 sm:px-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-center lg:gap-16 lg:py-16">
         <section className="stagger-in max-w-xl">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted">
             Audible reader
@@ -53,8 +53,8 @@ export function Landing() {
           </h1>
           <p className="mt-5 max-w-md text-base leading-relaxed text-muted">
             Open a document, press play, and follow the spoken sentence on the
-            page. Headers, page numbers, and citations stay quiet. Nothing is
-            uploaded.
+            page. Headers, page numbers, and citations stay quiet.{" "}
+            {HOSTED_NARRATION ? "Your file stays on this device." : "Nothing is uploaded."}
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Button
