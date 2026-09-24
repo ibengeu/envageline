@@ -1,4 +1,4 @@
-import type { NarrationSegment, ReadingProgress } from "../core/types.ts";
+import type { NarrationSegment, ReadingProgress, RecentDocument } from "../core/types.ts";
 
 // Where a reopened book resumes: the exact saved sentence when it still
 // exists, otherwise the top of the page the listener had reached (a
@@ -23,4 +23,19 @@ export function progressToSave(
 ): ReadingProgress | null {
   if (!segment) return null;
   return { documentId, page: segment.page, segmentId: segment.id, segmentIndex, updatedAt: Date.now() };
+}
+
+// When a book was last used: opened, or listened to (progress is saved as
+// the listener goes), whichever is later.
+function lastActivity(doc: RecentDocument): number {
+  return Math.max(doc.lastOpenedAt, doc.progress?.updatedAt ?? 0);
+}
+
+// The one book the landing page offers to continue.
+export function latestDocument(recents: readonly RecentDocument[]): RecentDocument | null {
+  let latest: RecentDocument | null = null;
+  for (const doc of recents) {
+    if (!latest || lastActivity(doc) > lastActivity(latest)) latest = doc;
+  }
+  return latest;
 }

@@ -4,11 +4,12 @@ import { Button } from "@/components/ui/button";
 import { openLocalFile, openRecent, openSample } from "@/reader/controller";
 import { useReaderStore } from "@/reader/core/store";
 import { cn } from "@/lib/utils";
+import { latestDocument } from "@/reader/playback/position";
 import { HOSTED_NARRATION } from "@/reader/speech/kokoro-endpoint";
 import { EvangelineMark } from "./logo";
 
 export function Landing() {
-  const recents = useReaderStore((s) => s.recents);
+  const latest = latestDocument(useReaderStore((s) => s.recents));
   const error = useReaderStore((s) => s.error);
   const ttsSupported = useReaderStore((s) => s.ttsSupported);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -152,33 +153,27 @@ export function Landing() {
             </p>
           </label>
 
-          {recents.length > 0 && (
+          {latest && (
             <div className="mt-6">
               <p className="mb-3 text-xs font-medium uppercase tracking-[0.16em] text-subtle">
                 Continue
               </p>
-              <ul className="space-y-2">
-                {recents.slice(0, 4).map((doc) => (
-                  <li key={doc.id}>
-                    <button
-                      type="button"
-                      onClick={() => void openRecent(doc.id)}
-                      className="flex w-full items-center justify-between rounded-xl bg-surface px-4 py-3 text-left shadow-[var(--shadow-border)] transition-colors duration-150 hover:bg-surface-2"
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm text-fg">
-                          {doc.title || doc.filename}
-                        </span>
-                        <span className="text-xs text-muted">
-                          {doc.pageCount} pages
-                          {doc.progress?.page ? ` · p. ${doc.progress.page}` : ""}
-                        </span>
-                      </span>
-                      <Play className="size-4 shrink-0 text-muted" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <button
+                type="button"
+                onClick={() => void openRecent(latest.id)}
+                className="flex w-full items-center justify-between rounded-xl bg-surface px-4 py-3 text-left shadow-[var(--shadow-border)] transition-colors duration-150 hover:bg-surface-2"
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-sm text-fg">
+                    {latest.title || latest.filename}
+                  </span>
+                  <span className="text-xs text-muted">
+                    {latest.pageCount} {latest.pageCount === 1 ? "page" : "pages"}
+                    {latest.progress?.page ? ` · p. ${latest.progress.page}` : ""}
+                  </span>
+                </span>
+                <Play className="size-4 shrink-0 text-muted" />
+              </button>
             </div>
           )}
         </section>
