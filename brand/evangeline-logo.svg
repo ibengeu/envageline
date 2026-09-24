@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <rect width="400" height="400" fill="#0c0c0d"/>
+  <!-- shifted left so the page + waves sit optically centred -->
+  <g transform="translate(-16 0)">
+  <!-- the page -->
+  <rect x="92" y="84" width="164" height="232" rx="16" fill="#f3f1ec"/>
+  <!-- lines of text; the one being read is dark and full -->
+  <rect x="118" y="120" width="112" height="11" rx="5.5" fill="#d8d3c8"/>
+  <rect x="118" y="148" width="96" height="11" rx="5.5" fill="#d8d3c8"/>
+  <rect x="112" y="170" width="124" height="27" rx="8" fill="#c5c9d0"/>
+  <rect x="118" y="178" width="112" height="11" rx="5.5" fill="#141311"/>
+  <rect x="118" y="208" width="104" height="11" rx="5.5" fill="#d8d3c8"/>
+  <rect x="118" y="236" width="112" height="11" rx="5.5" fill="#d8d3c8"/>
+  <rect x="118" y="264" width="70" height="11" rx="5.5" fill="#d8d3c8"/>
+  <!-- the voice, coming from the highlighted line -->
+  <path d="M280 150 C300 164 306 174 306 183.5 C306 193 300 203 280 217" fill="none" stroke="#c5c9d0" stroke-width="14" stroke-linecap="round"/>
+  <path d="M306 120 C338 142 348 164 348 183.5 C348 203 338 225 306 247" fill="none" stroke="#8b8a86" stroke-width="12" stroke-linecap="round"/>
+  </g>
+</svg>

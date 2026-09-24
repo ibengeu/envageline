@@ -1,0 +1,21 @@
+<!doctype html><html><head>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500&family=Instrument+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+ html,body{margin:0}
+ .banner{width:1128px;height:191px;position:relative;overflow:hidden;background:#0c0c0d;
+   background-image:linear-gradient(180deg,rgba(255,255,255,.04),transparent 70%)}
+ /* LinkedIn places the page logo over the lower-left, so the content starts well right of it. */
+ .brand{position:absolute;left:340px;top:50%;transform:translateY(-50%);display:flex;align-items:center;gap:22px}
+ .brand img{width:72px;height:72px;border-radius:16px}
+ .name{font:500 50px/1 Newsreader,Georgia,serif;letter-spacing:-.02em;color:#f3f1ec}
+ .tag{margin-top:10px;font:400 18px/1.2 "Instrument Sans",sans-serif;color:#a3a29d;letter-spacing:.01em}
+ /* echo of the mark: lines of text, one being read */
+ .lines{position:absolute;right:64px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:13px;align-items:flex-start}
+ .l{height:8px;border-radius:4px;background:#2a2a2c}
+ .hl{position:relative;height:8px;border-radius:4px;background:#f3f1ec}
+ .hl::before{content:"";position:absolute;inset:-7px -9px;border-radius:7px;background:rgba(197,201,208,.22)}
+</style></head><body>
+<div class="banner" id="banner">
+ <div class="brand"><img src="evangeline-logo.svg" alt=""><div><div class="name">Evangeline</div><div class="tag">Listen to any PDF.</div></div></div>
+ <div class="lines"><div class="l" style="width:220px"></div><div class="l" style="width:188px"></div><div class="hl" style="width:236px"></div><div class="l" style="width:204px"></div><div class="l" style="width:132px"></div></div>
+</div></body></html>

@@ -8,19 +8,24 @@ export function EvangelineMark({ className }: { className?: string }) {
       aria-hidden="true"
     >
       <rect width="32" height="32" rx="7" className="fill-surface-2" />
-      <rect x="7" y="8" width="11" height="16" rx="1.4" className="fill-paper" />
+      {/* A page with the sentence being read highlighted, and the voice coming from it. */}
+      <rect x="5.5" y="6" width="13" height="20" rx="1.8" className="fill-paper" />
+      <rect x="7.75" y="9.6" width="8.5" height="1.9" rx="0.95" className="fill-ink opacity-15" />
+      <rect x="7" y="14.1" width="10" height="3.8" rx="1.2" className="fill-accent" />
+      <rect x="7.75" y="15.05" width="8.5" height="1.9" rx="0.95" className="fill-ink" />
+      <rect x="7.75" y="20.5" width="6.2" height="1.9" rx="0.95" className="fill-ink opacity-15" />
       <path
-        d="M21.2 11.2c2.2 1.4 3.4 3.4 3.4 4.8s-1.2 3.4-3.4 4.8"
+        d="M20.8 12.6C22.6 13.8 23.3 14.9 23.3 16S22.6 18.2 20.8 19.4"
         fill="none"
         className="stroke-accent"
-        strokeWidth="2.2"
+        strokeWidth="1.9"
         strokeLinecap="round"
       />
       <path
-        d="M23.6 8.8c3.2 2 5 4.8 5 7.2s-1.8 5.2-5 7.2"
+        d="M23.9 9.8C26.6 11.6 27.5 13.8 27.5 16S26.6 20.4 23.9 22.2"
         fill="none"
         className="stroke-muted"
-        strokeWidth="1.8"
+        strokeWidth="1.7"
         strokeLinecap="round"
       />
     </svg>
