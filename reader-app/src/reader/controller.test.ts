@@ -67,6 +67,21 @@ it("surfaces local narration unavailability as a playback error", () => {
   assert.match(state.notice ?? "", /local narration is unavailable/i);
 });
 
+it("never asks a visitor of the hosted reader to start a local server", () => {
+  for (const kind of ["unavailable", "synthesis-failed"]) {
+    const store = useReaderStore.getState();
+    store.setError(null);
+    store.setNotice(null);
+
+    reportTtsFailure(new DOMException(kind, "NotSupportedError"), { hosted: true });
+
+    const state = useReaderStore.getState();
+    const shown = `${state.notice ?? ""} ${state.error?.message ?? ""}`;
+    assert.match(shown, /try again/i, kind);
+    assert.doesNotMatch(shown, /local|kokoro/i, kind);
+  }
+});
+
 it("allows the reader to select and persist a non-default reading profile", async () => {
   await setReadingProfile("inclusive");
   assert.equal(getActiveReadingProfileId(), "inclusive");

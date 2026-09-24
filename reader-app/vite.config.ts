@@ -146,6 +146,12 @@ function authPopupPlugin(): Plugin {
 // The dev server starts once `src/router.tsx` and `src/routes/` exist — see
 // AGENTS.md § "First scaffold".
 export default defineConfig(({ command, isPreview }) => ({
+  define: {
+    // Self-hosted builds have no App Builder platform routes (/__grok/*).
+    "import.meta.env.VITE_PLATFORM_CHROME": JSON.stringify(
+      process.env.NITRO_PRESET === "node-server" ? "false" : "true",
+    ),
+  },
   server: {
     host: "0.0.0.0",
     port: 8080,
@@ -157,6 +163,20 @@ export default defineConfig(({ command, isPreview }) => ({
     strictPort: true,
   },
   resolve: { tsconfigPaths: true },
+  build: {
+    rolldownOptions: {
+      output: {
+        // Vite's dynamic-import preload helper otherwise lands in the entry
+        // chunk. The ONNX runtime starts its proxy worker from its own chunk,
+        // which imports that helper - so the worker ran the entry, i.e. page
+        // start-up ("document is not defined"), and the layout model silently
+        // failed in production builds. A chunk of its own keeps workers clean.
+        codeSplitting: {
+          groups: [{ name: "preload-helper", test: /preload-helper/ }],
+        },
+      },
+    },
+  },
   plugins: [
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.
@@ -170,11 +190,16 @@ export default defineConfig(({ command, isPreview }) => ({
     ...(command === "build" || isPreview
       ? [
           nitro({
-            preset: "vercel",
+            // Vercel by default; a self-hosted build sets NITRO_PRESET=node-server
+            // (see DEPLOY.md) and runs .output/server/index.mjs.
+            preset: process.env.NITRO_PRESET ?? "vercel",
             // Auto-registers server/middleware/* (the PWA install page +
             // manifest + head-tag middleware). Nitro v3 defaults serverDir to
             // false, so removing this silently unwires /?install=1 on deploys.
-            serverDir: "./server",
+            // OWASP A03:2025 Software Supply Chain Failures - a self-hosted
+            // build leaves out the App Builder platform middleware, which injects
+            // a third-party script (grok.com extensions.js) into every page.
+            serverDir: process.env.NITRO_PRESET === "node-server" ? false : "./server",
           }),
         ]
       : []),

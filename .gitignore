@@ -64,3 +64,4 @@ android-app/out/
 # reader-app build output and tooling locks
 reader-app/.vercel/
 reader-app/.node_modules.lock
+reader-app/.output/

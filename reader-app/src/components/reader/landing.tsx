@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { openLocalFile, openRecent, openSample } from "@/reader/controller";
 import { useReaderStore } from "@/reader/core/store";
 import { cn } from "@/lib/utils";
+import { HOSTED_NARRATION } from "@/reader/speech/kokoro-endpoint";
 import { EvangelineMark } from "./logo";
 
 export function Landing() {
@@ -37,7 +38,9 @@ export function Landing() {
           <EvangelineMark />
           <span className="font-display text-lg tracking-tight">Evangeline</span>
         </span>
-        <p className="hidden text-xs text-muted sm:block">On-device PDF listening</p>
+        <p className="hidden text-xs text-muted sm:block">
+            {HOSTED_NARRATION ? "PDF listening with highlighting" : "On-device PDF listening"}
+          </p>
       </header>
 
       <main className="relative mx-auto grid w-full max-w-6xl gap-10 px-5 pb-16 pt-6 sm:px-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-center lg:gap-16 lg:pt-10">
@@ -94,7 +97,7 @@ export function Landing() {
           <ul className="mt-10 grid gap-3 text-sm text-muted sm:grid-cols-3">
             <li className="rounded-xl bg-surface p-4 shadow-[var(--shadow-border)]">
               <Lock className="mb-3 size-4 text-accent" />
-              Stays on this device
+              {HOSTED_NARRATION ? "Files stay on this device" : "Stays on this device"}
             </li>
             <li className="rounded-xl bg-surface p-4 shadow-[var(--shadow-border)]">
               <Play className="mb-3 size-4 text-accent" />
@@ -143,8 +146,9 @@ export function Landing() {
             <EvangelineMark className="size-12" />
             <p className="mt-5 font-display text-2xl tracking-tight">Drop a PDF here</p>
             <p className="mt-2 max-w-xs text-sm leading-relaxed text-muted">
-              Local files only. Evangeline extracts text, rebuilds reading order, and
-              starts speaking as soon as the first page is ready.
+              {HOSTED_NARRATION
+                ? "Your PDF stays on this device. Only the sentence being read is sent to the Evangeline server to be spoken, and it isn't stored."
+                : "Local files only. Evangeline extracts text, rebuilds reading order, and starts speaking as soon as the first page is ready."}
             </p>
           </label>
 

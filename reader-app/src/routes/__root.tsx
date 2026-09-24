@@ -6,9 +6,12 @@ import {
 } from "@tanstack/react-router";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { AuthProvider } from "@/lib/auth/provider";
+import { HOSTED_NARRATION } from "@/reader/speech/kokoro-endpoint";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "Evangeline";
+// The App Builder platform serves /__grok/*; a self-hosted build does not.
+const PLATFORM_CHROME = import.meta.env.VITE_PLATFORM_CHROME !== "false";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -18,7 +21,9 @@ export const Route = createRootRoute({
       { title: APP_NAME },
       {
         name: "description",
-        content: "Listen to any PDF. An on-device audible reader with highlighting.",
+        content: HOSTED_NARRATION
+          ? "Listen to any PDF, read aloud with the words highlighted as they are spoken."
+          : "Listen to any PDF. An on-device audible reader with highlighting.",
       },
       { name: "theme-color", content: "#0c0c0d" },
     ],
@@ -29,8 +34,12 @@ export const Route = createRootRoute({
         href: "https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap",
       },
       { rel: "stylesheet", href: appCss },
-      { rel: "manifest", href: "/__grok/manifest.webmanifest" },
-      { rel: "apple-touch-icon", href: "/__grok/icon-180.png" },
+      ...(PLATFORM_CHROME
+        ? [
+            { rel: "manifest", href: "/__grok/manifest.webmanifest" },
+            { rel: "apple-touch-icon", href: "/__grok/icon-180.png" },
+          ]
+        : []),
     ],
   }),
   component: () => (

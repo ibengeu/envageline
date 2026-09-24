@@ -1,7 +1,7 @@
 import type { TTSVoice } from "../core/types.ts";
 import {
   DEFAULT_KOKORO_BASE,
-  isLoopbackEndpoint,
+  isAllowedNarrationBase,
   resolveKokoroUrls,
 } from "./kokoro-endpoint.ts";
 import type { KokoroFetch } from "./kokoro-tts.ts";
@@ -22,7 +22,7 @@ export async function loadVoices(
   const base = options.base ?? DEFAULT_KOKORO_BASE;
   // OWASP A02:2025 and A09:2025. Validate the destination before fetch.
   // This prevents voice requests from reaching a non-loopback host.
-  if (!isLoopbackEndpoint(base)) return [];
+  if (!isAllowedNarrationBase(base)) return [];
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
   if (!fetchImpl) return [];
   try {

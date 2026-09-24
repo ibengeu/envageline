@@ -73,6 +73,21 @@ it("rejects before fetch when the configured endpoint is not loopback", async ()
   assert.equal(fetchCalls, 0);
 });
 
+it("narrates through the reader's own site when built to", async () => {
+  const urls: string[] = [];
+  const engine = new KokoroSpeechEngine({
+    base: "",
+    fetchImpl: async (input) => {
+      urls.push(String(input));
+      return { ok: true, status: 200, blob: async () => new Blob(["wav"]) };
+    },
+  });
+
+  await engine.synthesize(segment, options);
+
+  assert.deepEqual(urls, ["/v1/audio/speech"]);
+});
+
 it("resolves without fetch when the segment has no spoken text", async () => {
   let fetchCalls = 0;
   const engine = new KokoroSpeechEngine({

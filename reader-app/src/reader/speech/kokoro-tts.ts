@@ -1,6 +1,6 @@
 import type { NarrationSegment, TTSOptions, TTSVoice } from "../core/types.ts";
 import { loadVoices } from "./kokoro-voice-manager.ts";
-import { DEFAULT_KOKORO_BASE, isLoopbackEndpoint, resolveKokoroUrls } from "./kokoro-endpoint.ts";
+import { DEFAULT_KOKORO_BASE, isAllowedNarrationBase, resolveKokoroUrls } from "./kokoro-endpoint.ts";
 
 export interface SynthesisResult {
   blob: Blob;
@@ -95,9 +95,9 @@ export class KokoroSpeechEngine implements TTSEngine {
 
   speak(segment: NarrationSegment, options: TTSOptions, preparedBlob?: Blob): Promise<void> {
     if (!segment.spokenText.trim()) return Promise.resolve();
-    // OWASP A09:2025 Server-Side Request Forgery.
-    // Restrict synthesis to the local service before any network request.
-    if (!isLoopbackEndpoint(this.base)) {
+    // OWASP A01:2025 Broken Access Control (SSRF) - synthesis may only go to
+    // Kokoro on this machine or the reader's own site, checked before any request.
+    if (!isAllowedNarrationBase(this.base)) {
       return Promise.reject(new DOMException("endpoint-rejected", "SecurityError"));
     }
     this.cancelActivePlayback();
@@ -122,9 +122,9 @@ export class KokoroSpeechEngine implements TTSEngine {
     if (!segment.spokenText.trim()) {
       return { blob: new Blob(), synthesisMs: 0 };
     }
-    // OWASP A09:2025 Server-Side Request Forgery.
-    // Reject non-loopback destinations before fetch can access an external host.
-    if (!isLoopbackEndpoint(this.base)) {
+    // OWASP A01:2025 Broken Access Control (SSRF) - refuse any other host
+    // before fetch can reach it.
+    if (!isAllowedNarrationBase(this.base)) {
       throw new DOMException("endpoint-rejected", "SecurityError");
     }
     return this.requestAudio(segment, options, signal);
