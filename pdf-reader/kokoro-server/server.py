@@ -15,6 +15,11 @@ from kokoro_onnx import Kokoro
 from pydantic import BaseModel, Field
 
 from integrity import ensure_verified
+from phonemes import install_shared_phonemizer
+
+# kokoro-onnx 0.4.7 builds (and leaks) a new espeak backend for every sentence;
+# share one per language instead. Must run before the first synthesis.
+install_shared_phonemizer()
 
 
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
