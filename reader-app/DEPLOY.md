@@ -52,6 +52,27 @@ ssh -i $K $H 'C=/opt/bitnami/nginx/conf/server_blocks/evangeline.conf
 The config trusts `CF-Connecting-IP` only from Cloudflare's published ranges
 (https://www.cloudflare.com/ips/). Refresh that list if Cloudflare changes it.
 
+## Kokoro memory cap
+
+`deploy/kokoro-memory.conf` is installed as
+`/etc/systemd/system/evangeline.service.d/memory.conf`:
+- `MemoryHigh=1200M`: reclaim and slow down above this.
+- `MemoryMax=1600M`: above this, systemd kills Kokoro alone and restarts it in 5 s.
+- `MemorySwapMax=0`: Kokoro can't use swap.
+
+Normal use is about 1.0 GB (0.7 GB of its own memory plus 0.3 GB of model cache).
+
+```sh
+ssh -i $K $H 'sudo install -m 644 /dev/stdin /etc/systemd/system/evangeline.service.d/memory.conf' < deploy/kokoro-memory.conf
+ssh -i $K $H 'sudo systemctl daemon-reload'        # applies to the running service, no restart
+
+# Watching it
+ssh -i $K $H 'echo $(( $(cat /sys/fs/cgroup/system.slice/evangeline.service/memory.current) / 1048576 )) MB; \
+  systemctl show evangeline -p NRestarts; journalctl -u evangeline --since -1d | grep -i oom'
+```
+
+A non-zero `NRestarts` or an `oom` line means Kokoro hit the ceiling and was restarted.
+
 ## Checks after a release
 
 ```sh
