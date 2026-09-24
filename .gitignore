@@ -65,3 +65,6 @@ android-app/out/
 reader-app/.vercel/
 reader-app/.node_modules.lock
 reader-app/.output/
+
+# Brand assets (logo, LinkedIn banner) - kept locally, not in the repo
+brand/
